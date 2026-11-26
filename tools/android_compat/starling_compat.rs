@@ -127,6 +127,25 @@ impl<T> StarlingOptionOk<T> for Option<T> {
     }
 }
 
+/// Text Sunrise lends from the host that Horizon handed owned: `x.id(host).starling_owned()` frees the host again
+/// (fixes.py adds it where the host is wanted mutably while the text lives).
+pub trait StarlingOwned {
+    type Owned;
+    fn starling_owned(self) -> Self::Owned;
+}
+impl StarlingOwned for Option<&str> {
+    type Owned = Option<String>;
+    fn starling_owned(self) -> Option<String> {
+        self.map(str::to_owned)
+    }
+}
+impl StarlingOwned for &str {
+    type Owned = String;
+    fn starling_owned(self) -> String {
+        self.to_owned()
+    }
+}
+
 /// Horizon's entity tags were strings to iterate; Sunrise's are UTF-16 views.
 pub trait StarlingTags {
     fn iter(&self) -> std::vec::IntoIter<String>;

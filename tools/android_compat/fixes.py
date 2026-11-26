@@ -56,6 +56,10 @@ TYPE_RULES = {
     ("(Text, u32)", "&String"): lambda e: f"(mod_api::Text::literal({_paren(_strip_ref(e))}.clone()), u32::MAX)",
     ("&[String]", "&EntityTags<'_>"):
         lambda e: f"&{_paren(_strip_ref(e))}.iter_utf16().map(String::from_utf16_lossy).collect::<Vec<String>>()",
+    # A text read made owned (starling_owned) where a borrowed one is read.
+    ("Option<&str>", "Option<String>"): lambda e: f"{_paren(e)}.as_deref()",
+    ("&str", "Option<String>"): lambda e: f"{_paren(e)}.as_deref().unwrap_or_default()",
+    ("Option<&str>", "&Option<String>"): lambda e: f"{_paren(_strip_ref(e))}.as_deref()",
     ("Option<bool>", "bool"): lambda e: f"Some({e})",
     ("bool", "Option<bool>"): lambda e: f"{_paren(e)}.unwrap_or(false)",
     ("Option<&ItemResource>", "&ItemResource"): lambda e: f"Some({e})",
@@ -86,6 +90,10 @@ SHAPE_RULES = [
     ((r"String|i32|u32|i64|u64|f32|f64|usize", r"Result<_, _>|Result<\w+, [\w:]+>"),
      lambda e: f"{_paren(e)}.unwrap_or_default()"),
 ]
+
+# Reads whose text Sunrise lends from the host (Horizon's handed a String): made owned where the host is wanted
+# mutably while the text is alive (E0502).
+TEXT_READS = {b"id", b"name", b"display_name", b"dimension", b"key", b"custom_name", b"translation_key"}
 
 # Methods Sunrise renamed whose old arity tells them apart: name -> (arguments of the old call, new name).
 RENAMED_BY_ARITY = {"insert": (5, "insert_at"), "extract": (5, "extract_at")}
@@ -223,6 +231,15 @@ def fixes(diagnostics: list[dict], folder: Path, root: Path) -> list[tuple[Path,
             # and the host is wanted mutably later: the value is kept as its own.
             borrowed = next((s for s in diag["spans"] if "immutable borrow occurs" in (s.get("label") or "")), None)
             if borrowed and _inside(borrowed, folder, root) == path:
+                # The host lent to a text read (`x.id(host)`, `player.name(host)`): Sunrise's text borrows the
+                # host where Horizon's was owned, so the read is made owned right there (starling_owned).
+                open_at = source.rfind(b"(", 0, borrowed["byte_start"])
+                call = re.search(rb"\.(\w+)\s*$", source[:open_at]) if open_at >= 0 else None
+                if call and call.group(1) in TEXT_READS and not source[open_at + 1:borrowed["byte_start"]].strip(b" &*"):
+                    close = _close(source, open_at)
+                    if close > 0 and not source[close:].startswith(b".starling_owned()"):
+                        edits.append((path, close, close, ".starling_owned()"))
+                        continue
                 line_end = source.find(b";", borrowed["byte_end"])
                 stmt_start = source.rfind(b"let ", 0, borrowed["byte_start"])
                 newline = source.rfind(b"\n", 0, borrowed["byte_start"])
