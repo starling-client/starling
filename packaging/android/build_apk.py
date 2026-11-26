@@ -164,7 +164,10 @@ def emutls_shared(ndk, abi):
     return path
 
 
-def build_library(profile, ndk, sdk, abi=ABI, packages=("sunrise-android",)):
+def build_library(profile, ndk, sdk, abi=ABI, packages=("sunrise-android",), messages=False):
+    """Builds `packages` for `abi`. With `messages`, cargo's JSON messages come back as text with whether it built,
+    instead of the output going to the console and a failure ending the script (android_native_sdk.py's Horizon
+    layer reads the compiler's errors to fix a mod and build again)."""
     env = dict(os.environ, ANDROID_NDK_HOME=str(ndk), ANDROID_HOME=str(sdk))
     # Preserve source identity in local diagnostic reports, including source builds.
     try:
@@ -199,13 +202,17 @@ def build_library(profile, ndk, sdk, abi=ABI, packages=("sunrise-android",)):
     if not (Path(sysroot) / "lib" / "rustlib" / "src" / "rust" / "library").is_dir():
         sys.exit("build_apk: the Rust toolchain has no rust-src, which the std build needs: "
                  "rustup component add rust-src")
-    run(
+    command = [
         "cargo", "ndk", "-t", abi, "--platform", MIN_SDK,
         # More packages than the game only for native mod libraries (tools/android_native_sdk.py `mods`), built
         # beside it with the same features and flags, so the game's crates are the ones the APK ships.
         "build", BUILD_STD, "--profile", profile, *(flag for p in packages for flag in ("-p", p)),
-        cwd=ROOT, env=env,
-    )
+    ]
+    if messages:
+        done = subprocess.run([*command, "--keep-going", "--message-format=json"], cwd=ROOT, env=env,
+                              capture_output=True, text=True)
+        return done.returncode == 0, done.stdout
+    run(*command, cwd=ROOT, env=env)
 
 
 def build_launchers(ndk, out, abi=ABI):

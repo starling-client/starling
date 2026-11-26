@@ -133,9 +133,9 @@ def game_build() -> tuple[str, str]:
 
 
 def unpack(path: Path, into: Path) -> dict:
-    """The package's files under `into`, refusing any name that would leave it; its manifest."""
+    """The package's files under `into`, refusing any name that would leave it; its manifest. A package made for
+    Horizon (`horizon-mod.toml`, Starling 0.9.0's mods) is adopted on the way (`adopt_horizon`)."""
     with zipfile.ZipFile(path) as z:
-        manifest = tomllib.loads(z.read("sunrise-mod.toml").decode("utf-8"))
         for info in z.infolist():
             name = info.filename
             parts = Path(name).parts
@@ -144,7 +144,64 @@ def unpack(path: Path, into: Path) -> dict:
             target = into / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(z.read(info))
-    return manifest
+    adopt_horizon(into)
+    return tomllib.loads((into / "sunrise-mod.toml").read_text(encoding="utf-8"))
+
+
+# Starling 0.9.0's mods were made for Horizon's API, which this game keeps for them (tools/android_compat: the
+# Horizon layer). Adoption renames them as Sunrise's own adoption does (sunrise_mod_package::horizon::adopt): the
+# pin of `[native]`, the API's crate names and the SDK's folder; HORIZON marks the package for the layer.
+HORIZON = ".starling-horizon"
+HORIZON_CRATES = "mod|client|core|world|items|protocol|assets|hooks|platform|shader|render|threads|look|optifine|part"
+HORIZON_NAMED = re.compile(rf"(?<![A-Za-z0-9_])horizon(?=[_-](?:{HORIZON_CRATES}))")
+HORIZON_PIN = re.compile(r"^(\s*)horizon(\s*=)", re.M)
+
+
+def adopt_horizon(work: Path) -> bool:
+    """`work`'s package renamed for Sunrise when it is a Horizon one; whether it is (now or already adopted)."""
+    old = work / "horizon-mod.toml"
+    if not old.is_file() or (work / "sunrise-mod.toml").is_file():
+        return (work / HORIZON).is_file()
+    lines, native = [], False
+    for line in old.read_text(encoding="utf-8").splitlines(keepends=True):
+        if line.lstrip().startswith("["):
+            native = line.lstrip().startswith("[native]")
+        lines.append(HORIZON_PIN.sub(r"\1sunrise\2", line) if native else line)
+    (work / "sunrise-mod.toml").write_text("".join(lines), encoding="utf-8")
+    old.unlink()
+    for path in [work / "Cargo.toml", *(work / "src").rglob("*.rs")]:
+        if path.is_file():
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            path.write_text(HORIZON_NAMED.sub("sunrise", text).replace(".horizon/", ".sunrise/"), encoding="utf-8")
+    (work / HORIZON).write_text("adopted from Horizon: tools/android_compat gives it Starling 0.9.0's API\n")
+    return True
+
+
+def horizon_layer(work: Path) -> None:
+    """The Horizon layer on an adopted mod's folder: its shims and rules (`compat`). The compiler-guided part runs
+    with the build (`mods`, tools/android_compat/fixes.py)."""
+    compat(work)
+
+
+def horizon_fixes(ids: list[str], profile: str, ndk: Path, sdkdir: Path, abi: str, packages: tuple) -> None:
+    """Builds `packages`; while Horizon mods among them fail, fixes what the compiler pins down
+    (tools/android_compat/fixes.py) and builds again, a few rounds at most. The build after it is the real one."""
+    sys.path.insert(0, str(COMPAT.parent))
+    import fixes  # noqa: E402
+    for round_ in range(1, 5):
+        built, output = build_apk.build_library(profile, ndk, sdkdir, abi, packages, messages=True)
+        if built:
+            return
+        made = 0
+        for mod_id in ids:
+            found = fixes.from_cargo(output, f"smod-{mod_id}")
+            made += fixes.apply(fixes.fixes(found, ROOT / MODS_DIR / mod_id, ROOT))
+        print(f"mods: Horizon layer, round {round_}: {made} fixes", flush=True)
+        if not made:
+            return
 
 
 def hooks_path(src: Path) -> str:
@@ -324,7 +381,9 @@ def patched(mod_id: str, work: Path, folder: Path, commit: str, abi: str) -> lis
 HORIZON_CRATE = re.compile(r"\bhorizon_(?=[a-z])")
 # Horizon's mod API names over Sunrise's (tools/android_compat/starling_compat.rs), put in a mod made for Horizon.
 COMPAT = ROOT / "tools" / "android_compat" / "starling_compat.rs"
-INNER = re.compile(r"\A(?:\s*(?://[!/][^\n]*|#!\[[^\]]*\])\n)*")
+# A file's inner part: its line comments (a licence header may come before `//!`), inner doc comments and inner
+# attributes, which must all come before the first item, as the `use` added after them is one.
+INNER = re.compile(r"\A(?:\s*(?://[^\n]*|#!\[[^\n]*\])\n)*")
 
 
 def body_end(text: str, start: int) -> int:
@@ -558,7 +617,7 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
     placeholder()
     if os.environ.get("SUNRISE_UNSTAGED_SOURCE") and not os.environ.get("SUNRISE_ANDROID_PATCH"):
         os.environ["SUNRISE_ANDROID_PATCH"] = str(patch_tool())
-    built = []
+    built, from_horizon = [], []
     for path in packages:
         work = folder / path.stem
         manifest = unpack(path, work)
@@ -575,10 +634,13 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
             work.rename(folder / mod_id)
             work = folder / mod_id
         cargo = tomllib.loads((work / "Cargo.toml").read_text())
+        horizon = adopt_horizon(work)
         # The patch tool reads the mod's own manifest (the pinned SDK's path), before it joins this workspace.
+        if horizon:
+            horizon_layer(work)
         if tables:
-            # Only mods with [native.*] rows for now: the API mods the store builds already have their ports.
-            compat(work)
+            if not horizon:
+                compat(work)
             retarget(mod_id, work)
         made = patched(mod_id, work, folder, commit, abi) if tables else None
         installs, patch_crates = made if made else (None, [])
@@ -634,13 +696,17 @@ def mods(out: Path, packages: list[Path], profile: str, abi: str) -> None:
                 + "".join(f"extern crate {name};\n" for _, name, _ in patch_crates)
                 + "extern crate sunrise_mod_host as _;\n")
         built.append((mod_id, version, identity, path, bool(tables)))
+        if horizon and not tables:
+            from_horizon.append(mod_id)
     if not built:
         sys.exit("mods: nothing to build")
 
     sdk = build_apk.sdk_dir()
     ndk = Path(os.environ.get("ANDROID_NDK_HOME") or sdk / "ndk" / build_apk.NDK)
-    build_apk.build_library(profile, ndk, sdk, abi, ("sunrise-android", *(
-        f"smod-{m}-library" if staged else f"smod-{m}" for m, *_, staged in built)))
+    packages = ("sunrise-android", *(f"smod-{m}-library" if staged else f"smod-{m}" for m, *_, staged in built))
+    if from_horizon:
+        horizon_fixes(from_horizon, profile, ndk, sdk, abi, packages)
+    build_apk.build_library(profile, ndk, sdk, abi, packages)
     triple = build_apk.TARGETS[abi][0]
     deps = ROOT / "target" / triple / ("debug" if profile == "dev" else profile)
     if out.exists():
