@@ -24,6 +24,20 @@ impl ClientSession for Game<'_> {
         );
         self.native_client_latency()
     }
+    fn client_waypoints(&self) -> Option<ClientWaypoints> {
+        mod_api::__private::check_access(
+            "client_waypoints",
+            mod_api::__private::LoadAccess::ClientSetup,
+        );
+        self.native_client_waypoints()
+    }
+    fn client_player_skins(&self) -> Option<ClientPlayerSkins> {
+        mod_api::__private::check_access(
+            "client_player_skins",
+            mod_api::__private::LoadAccess::ClientSetup,
+        );
+        self.native_client_player_skins()
+    }
     fn client_frame_stats(&self) -> Option<ClientFrameStats> {
         mod_api::__private::check_access(
             "client_frame_stats",

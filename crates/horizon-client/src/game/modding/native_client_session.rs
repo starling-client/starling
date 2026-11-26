@@ -50,6 +50,19 @@ impl Game<'_> {
         Some(u32::try_from(latency).unwrap_or(0))
     }
 
+    /// The locator bar's tracked waypoints; None outside a logged-in client world.
+    pub(super) fn native_client_waypoints(&self) -> Option<mod_api::ClientWaypoints> {
+        self.native_session()?;
+        Some(waypoints(&self.waypoints, self.locator_camera.map(|c| c.0)))
+    }
+
+    /// The listed players' skins as the Tab overlay draws them; None outside a logged-in
+    /// client world.
+    pub(super) fn native_client_player_skins(&self) -> Option<mod_api::ClientPlayerSkins> {
+        let remote = self.native_session()?;
+        Some(player_skins(&remote.listed_player_skins()))
+    }
+
     /// The local player's item use (`isUsingItem`, `getUsedItemHand`, `getTicksUsingItem`,
     /// `getUseItemRemainingTicks`); None when no item is in use or outside a logged-in client
     /// world.
@@ -171,6 +184,56 @@ impl Game<'_> {
         self.native_local_status(player)?;
         Some(self.ambience.moodiness)
     }
+}
+
+/// `ClientWaypointManager`'s table, in `forEachWaypoint`'s read order: farthest first by
+/// `distanceSquared` with a camera entity, no promised order without one, so the read cannot
+/// drift from what the bar draws.
+fn waypoints(
+    waypoints: &horizon_client::locator_bar::ClientWaypoints,
+    camera_entity_pos: Option<[f64; 3]>,
+) -> mod_api::ClientWaypoints {
+    use horizon_protocol::packets::play::{WaypointId, WaypointTarget};
+    let rows = waypoints.for_read(camera_entity_pos);
+    let entries = rows
+        .iter()
+        .filter_map(|w| {
+            let id = match &w.id {
+                WaypointId::Uuid(uuid) => mod_api::ClientWaypointId::Uuid(*uuid),
+                WaypointId::Name(name) => mod_api::ClientWaypointId::Name(name.clone()),
+            };
+            let target = match w.target {
+                WaypointTarget::Empty => mod_api::ClientWaypointTarget::Empty,
+                WaypointTarget::Block([x, y, z]) => {
+                    mod_api::ClientWaypointTarget::Block(mod_api::BlockPos::new(x, y, z))
+                }
+                WaypointTarget::Chunk([x, z]) => mod_api::ClientWaypointTarget::Chunk([x, z]),
+                WaypointTarget::Azimuth(angle) => mod_api::ClientWaypointTarget::Azimuth(angle),
+            };
+            // A style the wire validator did not accept skips the entry instead of
+            // panicking on peer data.
+            let style = mod_api::Identifier::parse(&w.style).ok()?;
+            Some(mod_api::ClientWaypointEntry::new(
+                id,
+                target,
+                style,
+                // The packet stores the colour as ARGB; the API takes RGB, as
+                // `living_set_waypoint_color` does.
+                w.color.map(|c| (c as u32) & 0x00FF_FFFF),
+            ))
+        })
+        .collect();
+    mod_api::ClientWaypoints::new(entries)
+}
+
+/// `Remote::listed_player_skins` as `ClientPlayerSkin`s, so the read cannot drift from what the
+/// tab list draws.
+fn player_skins(skins: &[(u128, String, bool)]) -> mod_api::ClientPlayerSkins {
+    let entries = skins
+        .iter()
+        .map(|(uuid, skin, slim)| mod_api::ClientPlayerSkin::new(*uuid, skin.clone(), *slim))
+        .collect();
+    mod_api::ClientPlayerSkins::new(entries)
 }
 
 #[cfg(test)]
@@ -389,5 +452,160 @@ pub(super) mod tests {
             game.remote = None;
             assert_eq!(current.block_breaking(game), None);
         });
+    }
+
+    /// The waypoint table as `client_waypoints` reads it: every tracked entry, farthest
+    /// first by squared distance from the camera entity.
+    #[test]
+    fn the_waypoints_read_as_the_bar_holds_them() {
+        use horizon_client::locator_bar::ClientWaypoints;
+        use horizon_protocol::packets::play::{
+            TrackedWaypoint, WaypointId, WaypointTarget, waypoint_operation,
+        };
+        let tracked = |id, style: &str, color, target| TrackedWaypoint {
+            operation: waypoint_operation::TRACK,
+            id,
+            style: style.into(),
+            color,
+            target,
+        };
+        let mut table = ClientWaypoints::default();
+        // Sent nearest-first, with the azimuth in the middle: nothing here depends on sent order.
+        table.apply(&tracked(
+            WaypointId::Uuid(7),
+            "minecraft:default",
+            Some(0xFF10_2030u32 as i32),
+            WaypointTarget::Block([2, 64, 3]), // nearest
+        ));
+        table.apply(&tracked(
+            WaypointId::Name("home".into()),
+            "minecraft:default",
+            None,
+            WaypointTarget::Azimuth(0.5),
+        ));
+        table.apply(&tracked(
+            WaypointId::Uuid(9),
+            "minecraft:default",
+            Some(0xFF00_FF00u32 as i32),
+            WaypointTarget::Block([0, 64, 20]), // middle
+        ));
+        table.apply(&tracked(
+            WaypointId::Uuid(11),
+            "minecraft:default",
+            Some(0xFF10_2040u32 as i32),
+            WaypointTarget::Block([30, 64, 0]), // farthest
+        ));
+        let list = waypoints(&table, Some([0.0, 64.0, 0.0]));
+        assert_eq!(
+            list.entries.len(),
+            4,
+            "every tracked waypoint, in the bar's read order"
+        );
+        // With a camera at [0, 64, 0] the read is farthest first by squared distance from the
+        // block centres: the azimuth (no distance at all) first, then [30, 64, 0] (centre
+        // 930.75), [0, 64, 20] (420.75) and [2, 64, 3] (18.75) — the reverse of sent order.
+        let order: Vec<_> = list.entries.iter().map(|e| e.id.clone()).collect();
+        assert_eq!(
+            order,
+            [
+                mod_api::ClientWaypointId::Name("home".into()),
+                mod_api::ClientWaypointId::Uuid(11),
+                mod_api::ClientWaypointId::Uuid(9),
+                mod_api::ClientWaypointId::Uuid(7),
+            ],
+            "the read shares the locator bar's farthest-first sort"
+        );
+        let azimuth = &list.entries[0];
+        assert_eq!(azimuth.target, mod_api::ClientWaypointTarget::Azimuth(0.5));
+        assert_eq!(azimuth.color, None, "no colour sent stays none");
+        let far = &list.entries[1];
+        assert_eq!(
+            far.target,
+            mod_api::ClientWaypointTarget::Block(mod_api::BlockPos::new(30, 64, 0))
+        );
+        assert_eq!(far.style.to_string(), "minecraft:default");
+        assert_eq!(far.color, Some(0x10_2040), "ARGB on the wire reads as RGB");
+        let mid = &list.entries[2];
+        assert_eq!(
+            mid.target,
+            mod_api::ClientWaypointTarget::Block(mod_api::BlockPos::new(0, 64, 20))
+        );
+        assert_eq!(mid.color, Some(0x00_FF00));
+        let near = &list.entries[3];
+        assert_eq!(
+            near.target,
+            mod_api::ClientWaypointTarget::Block(mod_api::BlockPos::new(2, 64, 3))
+        );
+        assert_eq!(near.color, Some(0x10_2030));
+        // Untracking drops the entry; without a camera entity no order is promised.
+        table.apply(&TrackedWaypoint {
+            operation: waypoint_operation::UNTRACK,
+            id: WaypointId::Uuid(11),
+            style: "minecraft:default".into(),
+            color: None,
+            target: WaypointTarget::Empty,
+        });
+        let list = waypoints(&table, None);
+        assert_eq!(list.entries.len(), 3, "untracked waypoints leave the table");
+        assert_eq!(
+            list.entries[1].id,
+            mod_api::ClientWaypointId::Name("home".into())
+        );
+    }
+
+    /// The listed players' skins as `client_player_skins` reads them: the resolved path and the
+    /// slim flag, joined on UUID.
+    #[test]
+    fn the_player_skins_read_as_the_tab_list_draws_them() {
+        use horizon_client::tab_list::TabPlayer;
+        // Listed uuids need a tab entry to be drawn; 4 has none and must not appear.
+        let listed: [u128; 4] = [1, 2, 3, 4];
+        let tab_players: std::collections::HashMap<u128, TabPlayer> = [
+            (1, TabPlayer::new(1, "Slim")),
+            (2, TabPlayer::new(2, "Wide")),
+            (3, TabPlayer::new(3, "Default")),
+        ]
+        .into();
+        let skins: std::collections::HashMap<u128, String> = [
+            (1, "skins/abc123".to_owned()),
+            (2, "skins/wide42".to_owned()),
+        ]
+        .into();
+        let skin_slim: std::collections::HashSet<u128> = [1].into();
+        let mut rows = crate::game::remote::listed_player_skins(
+            listed.iter(),
+            &tab_players,
+            &skins,
+            &skin_slim,
+        );
+        rows.sort_by_key(|row| row.0);
+        assert_eq!(
+            rows,
+            vec![
+                (1, "skins/abc123".to_owned(), true),
+                (2, "skins/wide42".to_owned(), false),
+                // No resolved skin: the UUID's default body and its own slim flag.
+                (3, "entity/player/slim/kai".to_owned(), true),
+            ],
+            "every drawn player's skin, and no skin for the uuid without a tab entry"
+        );
+        let skins = player_skins(
+            &rows
+                .iter()
+                .map(|(uuid, skin, slim)| (*uuid, skin.clone(), *slim))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(skins.entries.len(), 3);
+        assert_eq!(skins.entries[0].uuid, 1);
+        assert_eq!(skins.entries[0].skin, "skins/abc123");
+        assert!(skins.entries[0].slim, "a downloaded slim skin stays slim");
+        assert_eq!(skins.entries[1].uuid, 2);
+        assert!(!skins.entries[1].slim, "a wide skin is not slim");
+        assert_eq!(skins.entries[2].uuid, 3);
+        assert_eq!(skins.entries[2].skin, rows[2].1.clone());
+        assert_eq!(
+            skins.entries[2].slim, rows[2].2,
+            "the default path keeps its slim flag"
+        );
     }
 }

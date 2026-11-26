@@ -231,6 +231,21 @@ impl ClientWaypoints {
     pub fn has_waypoints(&self) -> bool {
         !self.waypoints.is_empty()
     }
+    /// The tracked waypoints in the order the server sent them, for reads that must not
+    /// change them.
+    pub fn entries(&self) -> &[TrackedWaypoint] {
+        &self.waypoints
+    }
+    /// `ClientWaypointManager.forEachWaypoint`'s read order: with a camera entity, the
+    /// tracked waypoints farthest first by `distanceSquared`, ties in no promised order;
+    /// without one, in no promised order.
+    pub fn for_read(&self, camera_entity_pos: Option<[f64; 3]>) -> Vec<&TrackedWaypoint> {
+        let mut rows: Vec<&TrackedWaypoint> = self.waypoints.iter().collect();
+        if let Some(pos) = camera_entity_pos {
+            rows.sort_by(|a, b| distance_sq(pos, b).total_cmp(&distance_sq(pos, a)));
+        }
+        rows
+    }
     pub fn clear(&mut self) {
         self.waypoints.clear();
     }
@@ -416,15 +431,16 @@ impl View<'_> {
             }
         }
     }
-    /// `distanceSquared` from the camera entity.
-    fn distance_sq(&self, w: &TrackedWaypoint) -> f64 {
-        let e = self.camera_entity_pos;
-        let d = |p: [f64; 3]| (0..3).map(|i| (p[i] - e[i]).powi(2)).sum::<f64>();
-        match w.target {
-            WaypointTarget::Block(v) => d(centre(v)),
-            WaypointTarget::Chunk(c) => d(Self::chunk_middle(c, e[1].floor() as i32)),
-            WaypointTarget::Empty | WaypointTarget::Azimuth(_) => f64::INFINITY,
-        }
+}
+
+/// `distanceSquared` from the camera entity.
+pub fn distance_sq(camera_entity_pos: [f64; 3], w: &TrackedWaypoint) -> f64 {
+    let e = camera_entity_pos;
+    let d = |p: [f64; 3]| (0..3).map(|i| (p[i] - e[i]).powi(2)).sum::<f64>();
+    match w.target {
+        WaypointTarget::Block(v) => d(centre(v)),
+        WaypointTarget::Chunk(c) => d(View::chunk_middle(c, e[1].floor() as i32)),
+        WaypointTarget::Empty | WaypointTarget::Azimuth(_) => f64::INFINITY,
     }
 }
 
@@ -456,7 +472,7 @@ impl ClientWaypoints {
         let mut sorted: Vec<(f64, &TrackedWaypoint)> = self
             .waypoints
             .iter()
-            .map(|w| (view.distance_sq(w), w))
+            .map(|w| (distance_sq(view.camera_entity_pos, w), w))
             .collect();
         sorted.sort_by(|a, b| b.0.total_cmp(&a.0));
         let mut out = Vec::new();

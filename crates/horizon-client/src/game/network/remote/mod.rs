@@ -734,6 +734,12 @@ pub(super) struct Remote {
     own_profile: OwnProfile,
     /// The skin texture each profile's players show, once its download is ready.
     skins: HashMap<u128, String>,
+    /// The resolved skins that use the slim model (`PlayerSkin.model`): the
+    /// textures' `slim`, plus the local player's launcher offline skin and
+    /// signed-in account skin, which `skin_textures` never holds. Kept
+    /// alongside `skins` so `listed_player_skins` reads the model the game
+    /// draws, not the textures property.
+    skin_slim: std::collections::HashSet<u128>,
     skins_revision: u64,
     published_skins: Option<(usize, u128, u64, u64)>,
     listed: std::collections::HashSet<u128>,
@@ -875,6 +881,51 @@ const STEER_REST: Duration = Duration::from_secs(1);
 const MOUNT_MENU: &str = "horizon:mount";
 /// ServerboundPlayerInputPacket's shift bit.
 const SHIFT_INPUT: u8 = 1 << 5;
+
+impl Remote {
+    /// The listed players' skins as the Tab overlay draws them: each player's resolved skin
+    /// texture path and whether it uses the slim model, in no order. A skin still downloading
+    /// reads as the profile's default (`tab_list::default_skin`), as the overlay draws it.
+    pub(in crate::game) fn listed_player_skins(&self) -> Vec<(u128, String, bool)> {
+        listed_player_skins(
+            self.listed.iter(),
+            &self.tab_players,
+            &self.skins,
+            &self.skin_slim,
+        )
+    }
+}
+
+/// The listed players' skins as the Tab overlay draws them: each player's resolved skin
+/// texture path and whether it uses the slim model, in no order. A skin still downloading
+/// reads as the profile's default (`tab_list::default_skin`), as the overlay draws it.
+/// Only listed players with a tab entry are drawn, as `remote_tab_players` filters them.
+pub(in crate::game) fn listed_player_skins<'a>(
+    listed: impl Iterator<Item = &'a u128>,
+    tab_players: &std::collections::HashMap<u128, horizon_client::tab_list::TabPlayer>,
+    skins: &std::collections::HashMap<u128, String>,
+    skin_slim: &std::collections::HashSet<u128>,
+) -> Vec<(u128, String, bool)> {
+    listed
+        .filter_map(|uuid| tab_players.get(uuid))
+        .map(|player| {
+            let uuid = player.uuid;
+            let skin = skins.get(&uuid).map_or_else(
+                || horizon_client::tab_list::default_skin(uuid).to_owned(),
+                |skin| skin.clone(),
+            );
+            // The resolved skin's model is the one `update_remote_skins`
+            // kept (`skin_slim`): the textures' `slim`, plus the local
+            // player's launcher offline skin and signed-in account skin,
+            // which `skin_textures` never holds.
+            let slim = match skins.get(&uuid) {
+                Some(_) => skin_slim.contains(&uuid),
+                None => skin.contains("/slim/"),
+            };
+            (uuid, skin, slim)
+        })
+        .collect()
+}
 
 impl Remote {
     /// Count movement packets and ticks ended; a second with more than 20 of either is logged.
@@ -1404,6 +1455,7 @@ impl Game<'_> {
             skin_textures: HashMap::new(),
             own_profile: OwnProfile::Idle,
             skins: HashMap::new(),
+            skin_slim: Default::default(),
             skins_revision: 0,
             published_skins: None,
             listed: Default::default(),
@@ -1671,6 +1723,7 @@ impl Game<'_> {
             skin_textures: HashMap::new(),
             own_profile: OwnProfile::Idle,
             skins: HashMap::new(),
+            skin_slim: Default::default(),
             skins_revision: 0,
             published_skins: None,
             listed: Default::default(),
@@ -6463,10 +6516,11 @@ impl Game<'_> {
             }
         }
         if let Some(r) = self.remote.as_mut()
-            && r.skins != skins
+            && (r.skins != skins || r.skin_slim != slim)
         {
             r.skins_revision = r.skins_revision.wrapping_add(1);
             r.skins = skins;
+            r.skin_slim = slim;
         }
         // ClientMannequin.updateSkin (PlayerSkinRenderCache.lookup): a
         // mannequin's DATA_PROFILE `textures` property resolves like a
