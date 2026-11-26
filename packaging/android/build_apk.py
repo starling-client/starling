@@ -210,7 +210,7 @@ def build_library(profile, ndk, sdk, abi=ABI, packages=("sunrise-android",), mes
         "check" if check else "build", BUILD_STD, "--profile", profile, *(flag for p in packages for flag in ("-p", p)),
     ]
     if messages:
-        done = subprocess.run([*command, "--keep-going", "--message-format=json"], cwd=ROOT, env=env,
+        done = subprocess.run([*map(str, command), "--keep-going", "--message-format=json"], cwd=ROOT, env=env,
                               capture_output=True, text=True)
         # Cargo's own words (a manifest it refused) are on stderr, after the compiler's JSON.
         return done.returncode == 0, done.stdout + "\n" + done.stderr
