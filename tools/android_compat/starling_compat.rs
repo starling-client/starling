@@ -153,6 +153,98 @@ impl MovementInputEvent {
     }
 }
 
+/// Horizon's level queries that returned lists, over Sunrise's visits (`visit_entities_in` and the rest): the same
+/// entities in the same order, `None` where the visit refuses (a stale level, a client, a parked level).
+pub trait StarlingLevelEntities {
+    fn entities_in(self, host: &dyn Host, min: [f64; 3], max: [f64; 3]) -> Option<Vec<mod_api::EntityRef>>;
+    fn all_entities(self, host: &dyn Host) -> Option<Vec<mod_api::EntityRef>>;
+    fn online_players(self, host: &dyn Host) -> Option<Vec<PlayerRef>>;
+}
+
+impl StarlingLevelEntities for mod_api::LevelRef {
+    fn entities_in(self, host: &dyn Host, min: [f64; 3], max: [f64; 3]) -> Option<Vec<mod_api::EntityRef>> {
+        let mut found = Vec::new();
+        self.visit_entities_in(host, min, max, &mut |entity| {
+            found.push(entity);
+            core::ops::ControlFlow::Continue(())
+        })
+        .ok()?;
+        Some(found)
+    }
+
+    fn all_entities(self, host: &dyn Host) -> Option<Vec<mod_api::EntityRef>> {
+        let mut found = Vec::new();
+        self.visit_all_entities(host, &mut |entity| {
+            found.push(entity);
+            core::ops::ControlFlow::Continue(())
+        })
+        .ok()?;
+        Some(found)
+    }
+
+    fn online_players(self, host: &dyn Host) -> Option<Vec<PlayerRef>> {
+        let mut found = Vec::new();
+        self.visit_online_players(host, &mut |player| {
+            found.push(player);
+            core::ops::ControlFlow::Continue(())
+        })
+        .ok()?;
+        Some(found)
+    }
+}
+
+/// Horizon's `insert_any` / `extract_any`, which moved what they could and said how much: Sunrise's `insert` and
+/// `extract` (its old per-index ones are `insert_at` / `extract_at`), with a handler that answered more than it was
+/// asked counted as nothing moved.
+pub trait StarlingResources<R> {
+    fn insert_any(&self, host: &mut dyn mod_api::ServerHost, tx: &mod_api::Transaction, resource: &R, amount: u32)
+    -> u32;
+    fn extract_any(&self, host: &mut dyn mod_api::ServerHost, tx: &mod_api::Transaction, resource: &R, amount: u32)
+    -> u32;
+}
+
+impl<R, T: mod_api::ResourceHandler<R> + ?Sized> StarlingResources<R> for T {
+    fn insert_any(&self, host: &mut dyn mod_api::ServerHost, tx: &mod_api::Transaction, resource: &R, amount: u32)
+    -> u32 {
+        self.insert(host, tx, resource, amount).unwrap_or(0)
+    }
+
+    fn extract_any(&self, host: &mut dyn mod_api::ServerHost, tx: &mod_api::Transaction, resource: &R, amount: u32)
+    -> u32 {
+        self.extract(host, tx, resource, amount).unwrap_or(0)
+    }
+}
+
+/// Names Sunrise keeps at the API's root that Horizon's mods used without importing them (a hook's parameter types
+/// the adoption's rules write, or the mod named them through a glob Sunrise no longer has).
+pub use mod_api::{ConfigContext, HostSide, PackDiscoveryContext};
+
+/// Horizon's `move_resources(host, from, to, filter, max, tx)` at the root, over Sunrise's `resource_util` one
+/// (whose transaction is optional).
+pub fn move_resources<'a, R: 'a>(
+    host: &mut dyn mod_api::ServerHost,
+    from: &'a mod_api::Capability<dyn mod_api::ResourceHandler<R>>,
+    to: &'a mod_api::Capability<dyn mod_api::ResourceHandler<R>>,
+    filter: impl Fn(&R) -> bool,
+    max: u32,
+    tx: &mod_api::Transaction,
+) -> Result<u32, mod_api::Overanswered> {
+    mod_api::resource_util::move_resources(host, from, to, filter, max, Some(tx))
+}
+
+/// Fields Horizon's types had that Sunrise's compute: tools/android_compat/fixes.py turns `x.field` into the call.
+pub trait StarlingRespawnData {
+    /// Horizon's `RespawnData::pos`: the block of Sunrise's `position`.
+    fn starling_respawn_pos(&self) -> [i32; 3];
+}
+
+impl StarlingRespawnData for mod_api::RespawnData {
+    fn starling_respawn_pos(&self) -> [i32; 3] {
+        let pos = self.position.pos();
+        [pos.x, pos.y, pos.z]
+    }
+}
+
 /// An id Horizon handed as `Option<String>` (`.as_deref()` read it) that Sunrise hands as `Option<Option<&str>>`.
 pub trait StarlingNestedId {
     fn as_deref(&self) -> Option<&str>;

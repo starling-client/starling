@@ -143,6 +143,16 @@ for path, text in list(files.items()):
         continue
     end_at = body_end(text, m.start() + 1)
     body = text[m.end():end_at - 1]
+    if re.search(r"\bself\b(?!::)", body):
+        # The body calls the mod's own methods: it runs on an instance of the hooks type, made as Sunrise makes the
+        # registered one (`Default`, which `#[sunrise_mod]` requires), kept for every command. A unit struct, the
+        # usual hooks type, is the same value either way.
+        owner = list(re.finditer(r"impl\s+(?:mod_api::)?Hooks\s+for\s+(\w+)", text[:m.start()]))
+        if owner:
+            ty = owner[-1].group(1)
+            body = ("\n    static STARLING_SELF: std::sync::OnceLock<" + ty + "> = std::sync::OnceLock::new();\n"
+                    "    let starling_self: &" + ty + " = STARLING_SELF.get_or_init(Default::default);"
+                    + re.sub(r"\bself\b(?!::)", "starling_self", body))
     module = "" if path.name == "lib.rs" else f"{path.stem}::"
     files[path] = (text[:m.start()] + text[end_at:] +
                    "\n/// Starling's port: the old `run_mod_command` hook's body.\n"

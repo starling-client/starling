@@ -50,9 +50,24 @@ TYPE_RULES = {
     ("Option<String>", "Option<Option<&str>>"): lambda e: f"{_paren(e)}.flatten().map(str::to_string)",
     ("Option<&str>", "Option<Option<&str>>"): lambda e: f"{_paren(e)}.flatten()",
     ("[i32; 3]", "Option<[i32; 3]>"): lambda e: f"{_paren(e)}.unwrap_or_default()",
+    # Sunrise's `insert` / `extract` say when a handler answered more than asked; Horizon's moved nothing then.
+    ("u32", "Result<u32, Overanswered>"): lambda e: f"{_paren(e)}.unwrap_or(0)",
+    ("u32", "Result<u32, mod_api::Overanswered>"): lambda e: f"{_paren(e)}.unwrap_or(0)",
     ("[i32; 3]", "&[i32; 3]"): lambda e: f"*{_paren(e)}",
     ("&[i32; 3]", "[i32; 3]"): lambda e: f"&{_paren(e)}",
 }
+
+# Fields Horizon's types had that Sunrise's compute (starling_compat.rs): (type, field) -> the call that reads it.
+FIELD_CALLS = {
+    ("RespawnData", "pos"): "starling_respawn_pos()",
+}
+
+# Names starling_compat.rs gives every file of an adopted mod: an import of them from `mod_api` that no longer
+# resolves is dropped, and the prelude's glob supplies them.
+PRELUDE = {"move_resources", "MovementInputEvent"}
+
+# Methods Sunrise renamed whose old arity tells them apart: name -> (arguments of the old call, new name).
+RENAMED_BY_ARITY = {"insert": (5, "insert_at"), "extract": (5, "extract_at")}
 
 # A method the old type had and Sunrise's value doesn't need: `x.unwrap_or(d)` on what is no longer an Option.
 GONE_OPTION_METHODS = {"unwrap_or", "unwrap_or_default", "unwrap_or_else", "unwrap", "as_deref", "copied", "cloned"}
@@ -79,6 +94,30 @@ def _close(text: bytes, open_at: int) -> int:
             if depth == 0:
                 return i + 1
     return -1
+
+
+def _shorthand(source: bytes, start: int, end: int) -> bool:
+    """Whether the identifier at `start..end` is a struct literal's shorthand field (`Path { a, id }`): it sits
+    between `{` or `,` and `,` or `}`, and the brace that opens its group follows a type's name."""
+    before = source[:start].rstrip()
+    after = source[end:].lstrip()
+    if not (before.endswith((b"{", b",")) and after.startswith((b",", b"}"))):
+        return False
+    depth = 0
+    for i in range(start - 1, -1, -1):
+        c = source[i:i + 1]
+        if c in (b")", b"]", b"}"):
+            depth += 1
+        elif c in (b"(", b"["):
+            if depth == 0:
+                return False
+            depth -= 1
+        elif c == b"{":
+            if depth == 0:
+                head = source[:i].rstrip()
+                return bool(re.search(rb"[A-Z]\w*(?:::)?(?:<[^<>]*>)?$", head))
+            depth -= 1
+    return False
 
 
 def fixes(diagnostics: list[dict], folder: Path, root: Path) -> list[tuple[Path, int, int, str]]:
@@ -117,7 +156,47 @@ def fixes(diagnostics: list[dict], folder: Path, root: Path) -> list[tuple[Path,
             pair = pair or _types(label)
             rule = TYPE_RULES.get(pair) if pair else None
             if rule:
-                edits.append((path, start, end, rule(expr)))
+                new = rule(expr)
+                if re.fullmatch(r"[A-Za-z_]\w*", expr) and _shorthand(source, start, end):
+                    # `Foo { id }`: the field keeps its name, the value is converted.
+                    new = f"{expr}: {new}"
+                edits.append((path, start, end, new))
+        elif code in ("E0061", "E0050"):
+            # Horizon's per-index `insert(host, tx, index, resource, amount)` is Sunrise's `insert_at` (its
+            # `insert` is the old `insert_any`): a call with the old arity, or a handler's method with the old
+            # parameters, takes the new name.
+            if code == "E0061":
+                m = re.search(r"takes (\d+) arguments? but (\d+) arguments? (?:were|was) supplied", diag["message"])
+                name, given, at = expr, int(m.group(2)) if m else -1, (start, end)
+            else:
+                m = re.search(r"method `(\w+)` has (\d+) parameters?", diag["message"])
+                name, given = (m.group(1), int(m.group(2)) - 1) if m else ("", -1)
+                fn = source.rfind(f"fn {name}".encode(), 0, start + 1)
+                at = (fn + 3, fn + 3 + len(name)) if fn >= 0 else None
+            if name in RENAMED_BY_ARITY and at and given == RENAMED_BY_ARITY[name][0]:
+                edits.append((path, *at, RENAMED_BY_ARITY[name][1]))
+        elif code == "E0609":
+            m = re.search(r"no field `(\w+)` on type `&?(?:mut )?(?:[\w:]+::)?(\w+)", diag["message"])
+            call = FIELD_CALLS.get((m.group(2), m.group(1))) if m else None
+            if call and expr == m.group(1):
+                edits.append((path, start, end, call))
+        elif code == "E0432":
+            m = re.search(r"unresolved import `(?:mod_api::)?(\w+)`", diag["message"])
+            if m and m.group(1) in PRELUDE:
+                if expr.startswith("mod_api::"):
+                    # `use mod_api::name;`: the prelude's copy, by its own path.
+                    edits.append((path, start, end, f"crate::starling_compat::{m.group(1)}"))
+                elif expr == m.group(1):
+                    # One name of a `use mod_api::{..}` list: out, with the comma after it (or before it).
+                    after = len(source[end:]) - len(source[end:].lstrip())
+                    if source[end + after:end + after + 1] == b",":
+                        edits.append((path, start, end + after + 1, ""))
+                    else:
+                        before = source[:start].rstrip()
+                        if before.endswith(b","):
+                            edits.append((path, len(before) - 1, end, ""))
+                        else:
+                            edits.append((path, start, end, "self as _"))
         elif code == "E0614" and expr.startswith("*"):
             # `*pos` where `pos` is a value now.
             edits.append((path, start, end, expr[1:]))
