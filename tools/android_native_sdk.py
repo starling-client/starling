@@ -415,8 +415,26 @@ MOVEMENT_HOOK = re.compile(
     r"(\w+)\s*:\s*&mut\s+(?:mod_api::)?MovementInputEvent\s*,?\s*\)\s*\{")
 
 
+ON_LOAD_HOOK = re.compile(
+    r"fn\s+block_entity_on_load\s*\(\s*&self\s*,\s*(\w+)\s*:\s*(?:mod_api::)?HostSide\s*<\s*'_\s*>\s*,\s*"
+    r"(\w+)\s*:\s*&mut\s+(?:mod_api::)?BlockEntityOnLoadEvent(?:\s*<\s*'_\s*>)?\s*,?\s*\)\s*\{")
+
+
 def api_rules(text: str) -> str:
     """Horizon hooks Sunrise renamed, rewritten in place: the old body runs on the old event (starling_compat)."""
+    # `block_entity_on_load` lent the host and the block entity's handle; Sunrise lends a scope that holds both.
+    m = ON_LOAD_HOOK.search(text)
+    while m:
+        host, event = m.group(1), m.group(2)
+        end = body_end(text, m.end() - 1)
+        body = text[m.end():end - 1]
+        new = (f"fn block_entity_on_load(&self, __starling_event: &mut mod_api::BlockEntityOnLoadEvent<'_>) {{\n"
+               f"        let Some(mut __starling_old) = crate::starling_compat::BlockEntityOnLoadEvent::of(__starling_event)"
+               f" else {{ return }};\n"
+               f"        (|{host}: mod_api::HostSide<'_>, {event}: &mut crate::starling_compat::BlockEntityOnLoadEvent| "
+               f"{{{body}}})(__starling_event.subject.host(), &mut __starling_old);\n    }}")
+        text = text[:m.start()] + new + text[end:]
+        m = ON_LOAD_HOOK.search(text, m.start() + len(new))
     m = MOVEMENT_HOOK.search(text)
     while m:
         host, event = m.group(1), m.group(2)

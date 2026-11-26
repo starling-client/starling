@@ -102,6 +102,41 @@ pub trait StarlingPlain: Sized {
         self
     }
 }
+/// `.ok()` / `.map_or(..)` read a value Horizon handed as a `Result` or an `Option`: the value itself.
+pub trait StarlingPlainRead: Sized {
+    fn ok(self) -> Option<Self> {
+        Some(self)
+    }
+    fn map_or<U>(self, _default: U, f: impl FnOnce(Self) -> U) -> U {
+        f(self)
+    }
+}
+impl StarlingPlainRead for i32 {}
+impl StarlingPlainRead for u32 {}
+impl StarlingPlainRead for f32 {}
+impl StarlingPlainRead for f64 {}
+impl StarlingPlainRead for bool {}
+
+/// `.ok()` on what Horizon handed as a `Result` and Sunrise as an `Option`.
+pub trait StarlingOptionOk<T> {
+    fn ok(self) -> Option<T>;
+}
+impl<T> StarlingOptionOk<T> for Option<T> {
+    fn ok(self) -> Option<T> {
+        self
+    }
+}
+
+/// Horizon's entity tags were strings to iterate; Sunrise's are UTF-16 views.
+pub trait StarlingTags {
+    fn iter(&self) -> std::vec::IntoIter<String>;
+}
+impl StarlingTags for mod_api::EntityTags<'_> {
+    fn iter(&self) -> std::vec::IntoIter<String> {
+        (*self).iter_utf16().map(String::from_utf16_lossy).collect::<Vec<_>>().into_iter()
+    }
+}
+
 impl StarlingPlain for i32 {}
 impl StarlingPlain for u32 {}
 impl StarlingPlain for f32 {}
@@ -233,6 +268,24 @@ pub fn move_resources<'a, R: 'a>(
     tx: &mod_api::Transaction,
 ) -> Result<u32, mod_api::Overanswered> {
     mod_api::resource_util::move_resources(host, from, to, filter, max, Some(tx))
+}
+
+/// Horizon's `block_entity_on_load` event: the type and the block entity's handle. Sunrise lends a scope instead,
+/// whose view has the handle and whose host the old hook got beside the event (the adoption's rule builds this,
+/// runs the old body on it with `subject.host()`).
+pub struct BlockEntityOnLoadEvent {
+    pub id: mod_api::BlockEntityTypeKey,
+    pub entity: mod_api::BlockEntityRef,
+}
+
+impl BlockEntityOnLoadEvent {
+    pub fn of(event: &mut mod_api::BlockEntityOnLoadEvent<'_>) -> Option<Self> {
+        let entity = match &mut event.subject {
+            mod_api::BlockEntitySideScope::Server(scope) => scope.with_view(|view| view.handle()),
+            mod_api::BlockEntitySideScope::Client(scope) => scope.with_view(|view| view.handle()),
+        }?;
+        Some(Self { id: event.id, entity })
+    }
 }
 
 /// Fields Horizon's types had that Sunrise's compute: tools/android_compat/fixes.py turns `x.field` into the call.

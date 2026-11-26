@@ -95,8 +95,13 @@ GONE_OPTION_METHODS = {"unwrap_or", "unwrap_or_default", "unwrap_or_else", "unwr
 PLAIN = re.compile(r"(?:i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|usize|isize|String|&str|\[i32; 3\])")
 
 
-def _span(diag: dict) -> dict | None:
-    return next((s for s in diag.get("spans", []) if s.get("is_primary")), None)
+def _span(diag: dict, folder: Path | None = None, root: Path | None = None) -> dict | None:
+    """The primary span, or, when it is inside a macro's expansion (`format!` in std), the call that expanded it
+    in the mod's own file."""
+    span = next((s for s in diag.get("spans", []) if s.get("is_primary")), None)
+    while span and folder and not _inside(span, folder, root) and span.get("expansion"):
+        span = span["expansion"].get("span")
+    return span
 
 
 def _inside(span: dict, folder: Path, root: Path) -> Path | None:
@@ -153,7 +158,7 @@ def fixes(diagnostics: list[dict], folder: Path, root: Path) -> list[tuple[Path,
 
     for diag in diagnostics:
         code = (diag.get("code") or {}).get("code", "")
-        span = _span(diag)
+        span = _span(diag, folder, root)
         if not span:
             continue
         path = _inside(span, folder, root)
@@ -194,6 +199,37 @@ def fixes(diagnostics: list[dict], folder: Path, root: Path) -> list[tuple[Path,
                     # `Foo { id }`: the field keeps its name, the value is converted.
                     new = f"{expr}: {new}"
                 edits.append((path, start, end, new))
+        elif code == "E0658" and "str_as_str" in diag["message"] and expr == "as_str":
+            # `.as_str()` on what is a `&str` now (Horizon handed a String): the value itself.
+            dot = source.rfind(b".", 0, start)
+            stop = _close(source, end) if source[end:end + 1] == b"(" else -1
+            if dot >= 0 and stop > 0 and not source[dot + 1:start].strip():
+                edits.append((path, dot, stop, ""))
+        elif code == "E0631" and re.fullmatch(r"[\w:]+", expr):
+            # `.map(str::to_owned)` over Sunrise's `RegistryName` (which derefs to `str`): the function on its text.
+            note = " ".join(c["message"] for c in diag.get("children", [])) + diag["message"]
+            if re.search(r"expected function signature `fn\((?:[\w:]+::)?RegistryName\) -> _`", note) \
+                    and "found function signature `fn(&str) -> _`" in note:
+                edits.append((path, start, end, f"|name| {expr}(&name)"))
+        elif code == "E0061" and "expected `Text`, found `(Text, u32)`" in json.dumps(diag):
+            # A tooltip's `lines.push((text, colour))`: Sunrise's takes the two as arguments.
+            arg = next((s for c in diag.get("children", []) for s in c.get("spans", [])
+                        if _inside(s, folder, root) == path and source[s["byte_start"]:s["byte_start"] + 1] == b"("), None)
+            if arg:
+                inner = source[arg["byte_start"] + 1:arg["byte_end"] - 1].decode("utf-8", "replace")
+                edits.append((path, arg["byte_start"], arg["byte_end"], inner))
+        elif code == "E0502":
+            # `let name = player.name(host).unwrap_or_default();` borrowed the host where Horizon's gave a String,
+            # and the host is wanted mutably later: the value is kept as its own.
+            borrowed = next((s for s in diag["spans"] if "immutable borrow occurs" in (s.get("label") or "")), None)
+            if borrowed and _inside(borrowed, folder, root) == path:
+                line_end = source.find(b";", borrowed["byte_end"])
+                stmt_start = source.rfind(b"let ", 0, borrowed["byte_start"])
+                newline = source.rfind(b"\n", 0, borrowed["byte_start"])
+                if line_end > 0 and stmt_start >= 0 and stmt_start > newline:
+                    init = source[stmt_start:line_end]
+                    if re.search(rb"\.unwrap_or(?:_default\(\)|\(\"\"\))\s*$", init):
+                        edits.append((path, line_end, line_end, ".to_owned()"))
         elif code in ("E0061", "E0050"):
             # Horizon's per-index `insert(host, tx, index, resource, amount)` is Sunrise's `insert_at` (its
             # `insert` is the old `insert_any`): a call with the old arity, or a handler's method with the old
