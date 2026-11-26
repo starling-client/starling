@@ -3,6 +3,10 @@
 //! `trim`, with their NBT form in vanilla's `components` compound.
 #[path = "item_data/brewing_fuel.rs"]
 pub mod brewing_fuel;
+#[path = "item_data/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 #[path = "item_data/component_values.rs"]
 pub mod component_values;
 #[path = "item_data/cooking_fuel.rs"]
@@ -1125,28 +1129,6 @@ impl ItemStack {
     }
     pub fn data(&self) -> Option<&StackData> {
         self.extra.as_deref()
-    }
-    /// `ItemCooldowns.getCooldownGroup`: `use_cooldown`'s group, else the item's id.
-    pub fn cooldown_group(&self) -> String {
-        let group = self
-            .data()
-            .and_then(|d| d.other("minecraft:use_cooldown"))
-            .and_then(|c| c.get("cooldown_group"));
-        match group {
-            Some(Tag::String(s)) => s.to_string_lossy(),
-            _ => self.item.to_string(),
-        }
-    }
-    /// The equipment asset the stack's own `equippable` names (a server's custom armour).
-    pub fn equippable_asset(&self) -> Option<String> {
-        match self
-            .data()?
-            .other("minecraft:equippable")?
-            .get("asset_id")?
-        {
-            Tag::String(s) => Some(s.to_string_lossy()),
-            _ => None,
-        }
     }
     /// Whether the stack carries component `id`: its own data sets it, or its item has it by
     /// default and the stack's changes don't remove it (a `!id` entry). Reads the live

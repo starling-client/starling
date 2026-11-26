@@ -5,6 +5,10 @@
 //! under the mouse asks for.
 use crate::gamepad::ScrollArea;
 use std::cell::{Cell, RefCell};
+#[path = "widgets/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// The mouse cursor a frame's widgets asked for (`CursorTypes`; the others
 /// aren't asked for yet).
@@ -272,19 +276,6 @@ pub fn target_as(rect: [f32; 4], kind: Kind) {
 /// How many targets the frame has so far, for [`clip_targets`].
 pub fn targets_mark() -> usize {
     TARGETS.with_borrow(|(current, _, _)| current.len())
-}
-
-/// Move the targets registered since `mark` `dx` GUI pixels right, with what drew them: a
-/// screen laid out clear of a camera cutout's strip, then moved in.
-pub fn shift_targets(mark: usize, dx: f32) {
-    if dx == 0.0 {
-        return;
-    }
-    TARGETS.with_borrow_mut(|(current, _, _)| {
-        for target in current.iter_mut().skip(mark) {
-            target.rect[0] += dx;
-        }
-    });
 }
 
 /// Drop the targets registered since `mark` that aren't inside `y0..y1`

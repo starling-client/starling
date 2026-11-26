@@ -1,6 +1,10 @@
 //! LocalPlayer.sendPosition and PositionMoveRotation.calculateAbsolute.
 use sunrise_core::geometry::Vec3;
 use sunrise_protocol::packets::play::{self, PlayerPosition, Serverbound as S, relative};
+#[path = "player_sync/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// Only movement updates advance this baseline. A teleport acknowledgement is
 /// separate and must not suppress the next tick's corrected position or look.
@@ -16,21 +20,6 @@ pub struct PositionSender {
 }
 
 impl PositionSender {
-    /// The position the server was last told (the baseline of the next move).
-    pub fn last_sent(&self) -> [f64; 3] {
-        self.position
-    }
-    /// The rotation the server was last told by an update.
-    pub fn last_rotation(&self) -> (f32, f32) {
-        self.rotation
-    }
-    /// The server took a look from another packet (a teleport's acknowledgement, the view's look
-    /// before a hit): the next update sends its own look if it is not that one, even when the
-    /// baseline has it. With Free Direction steering the look sent is not the view's, and an
-    /// acknowledgement with the view's look would otherwise stand for every move after it.
-    pub fn told_rotation(&mut self, rotation: (f32, f32)) {
-        self.told = Some(rotation);
-    }
     #[sunrise_mod_api_macros::replaceable]
     pub fn update(
         &mut self,

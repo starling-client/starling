@@ -731,32 +731,6 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
     pages
 }
 
-fn display_setting((option, text): (DisplayOption, &'static str)) -> Setting {
-    Setting {
-        item: Item::Display(option),
-        cost: Cost::None,
-        text,
-    }
-}
-
-/// What the Calibration group says above Calibrate...
-const CALIBRATE_NOTE: &str = "Picks the fastest drawing for this phone.";
-
-/// The Performance page's Calibration group, on Android: what it does, then Calibrate...
-fn calibration_group() -> (&'static str, Vec<Setting>) {
-    (
-        "Calibration",
-        vec![
-            h(H::PerfCalibrateNote, Cost::None, CALIBRATE_NOTE),
-            h(
-                H::PerfCalibrate,
-                Cost::None,
-                "Tries the ways of drawing that look the same, in a test world, and keeps the fastest.",
-            ),
-        ],
-    )
-}
-
 /// BlueMap download radii, in chunks.
 const BLUE_MAP_RADII: [u32; 5] = [16, 32, 64, 128, 256];
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
@@ -3255,3 +3229,7 @@ mod tests {
 #[cfg(test)]
 #[path = "graphics_ui_hdr_tests.rs"]
 mod hdr_tests;
+#[path = "graphics_ui/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;

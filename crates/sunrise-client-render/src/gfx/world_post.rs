@@ -9,6 +9,10 @@
 //! clamp alone.
 
 use glam::{DMat4, DVec3, Mat4, Vec2};
+#[path = "world_post/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// The least a world is scaled to when memory runs out.
 const MIN_SCALE: f32 = 0.25;
@@ -672,23 +676,6 @@ impl Post {
         self.draw_onto(encoder, screen, shown, pipeline, timing);
     }
 
-    /// A shader pack's `final` goes into the world's target, to go up with [`Self::finish_pack`].
-    pub fn upscales_pack(&self) -> bool {
-        self.sharp.is_some() && self.scale < 1.0
-    }
-
-    /// Draw a shader pack's `final`, made in the world's target, onto `screen`.
-    pub fn finish_pack(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        screen: &wgpu::TextureView,
-        timing: Option<&mut super::pack_timing::PassTiming>,
-    ) {
-        if let (Some(target), Some(sharp)) = (&self.target, &self.sharp) {
-            self.draw_onto(encoder, screen, &target.group, sharp, timing);
-        }
-    }
-
     /// Draw what `group` binds (`bind`) onto `screen`.
     pub fn finish_with(
         &self,
@@ -775,18 +762,6 @@ fn sharpen_pipeline(
         multiview_mask: None,
         cache: None,
     })
-}
-
-/// Whether a vanilla world drawn below the window's size goes up with the sharp filter. It takes five
-/// filtered samples for every pixel of the window, which on Mali costs about what the lower resolution
-/// saved: at 50% a Mali-G68 went from 70-80 fps with the copy to 55 with it. There, and on PowerVR, the
-/// copy's one sample stays. `SUNRISE_WORLD_UPSCALE`: `on` and `off` choose on any GPU.
-fn upscales_sharply(gpu: &str) -> bool {
-    match std::env::var("SUNRISE_WORLD_UPSCALE").as_deref() {
-        Ok("on") => true,
-        Ok("off") => false,
-        _ => !gpu.contains("Mali") && !gpu.contains("PowerVR"),
-    }
 }
 
 #[cfg(test)]

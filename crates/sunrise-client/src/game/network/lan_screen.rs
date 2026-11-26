@@ -16,6 +16,10 @@ use sunrise_client::{
 };
 use sunrise_protocol::packets::play::{self, Serverbound as S};
 use winit::{event::KeyEvent, keyboard::PhysicalKey};
+#[path = "lan_screen/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 pub(super) struct WorldOptions {
     remote: bool,
@@ -2056,20 +2060,5 @@ mod tests {
         assert!(o.port.editable);
         assert!(o.port.key(KeyCode::Backspace, false, false));
         assert_eq!(o.port.value, "2555");
-    }
-}
-
-impl Game<'_> {
-    /// Starling: the game rules' screen while it is open, for the keyboard's editor on Android
-    /// (touch/text_mirror.rs).
-    pub(super) fn world_rules(&mut self) -> Option<&mut RulesScreen> {
-        self.world_options.as_mut()?.rules.as_mut()
-    }
-    /// Starling: the LAN port's box while it takes the keys, for the keyboard's editor on Android.
-    pub(super) fn world_options_port(&mut self) -> Option<&mut EditBox> {
-        match self.world_options.as_mut() {
-            Some(o) if o.port.focused && o.view == View::Options => Some(&mut o.port),
-            _ => None,
-        }
     }
 }

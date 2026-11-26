@@ -11,6 +11,10 @@ use sunrise_client::{
 };
 use sunrise_core::nbt::Tag;
 use winit::keyboard::KeyCode;
+#[path = "screens/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 impl Screen {
     /// The screens whose own `keyPressed` takes every press: the social
@@ -232,8 +236,6 @@ fn pause_icon_focus_ids(friends: bool) -> Vec<u8> {
         .map(|i| if i == FRIENDS_ICON { 10 } else { 12 + i as u8 })
         .collect()
 }
-/// Starling on Android: the row back to the launcher (`ha_launcher`), the world saved first.
-const LAUNCHER: &str = "starling.launcher.button";
 /// The pause menu's first id for the pages crates registered there: id `ADDED_PAGES + i` opens
 /// registered page `i`.
 const ADDED_PAGES: u8 = 40;

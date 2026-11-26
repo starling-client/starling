@@ -15,6 +15,10 @@
 //! `level.dat`) are migrated on open.
 use crate::mod_chunk_tickets::{ModTicket, ModTickets, TicketOwner};
 mod backpressure;
+#[path = "save/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 use compression_pool::{CompressedWrite, compress_records};
 pub mod biome_regions;
 pub mod block_entity_encode;
@@ -3455,32 +3459,6 @@ pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
     // A queued older copy must not land after this one.
     later::flush();
     write_dat_now(path, tag)
-}
-/// Starling: a file's new bytes (`fs::write` through `_new` and a rename); queued like `write_dat`.
-pub fn write_file(path: &Path, bytes: Vec<u8>) -> Result<()> {
-    if later::is_deferred() {
-        later::queue(path, later::Job::Bytes(bytes));
-        return Ok(());
-    }
-    later::flush();
-    write_file_now(path, &bytes)
-}
-fn write_file_now(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let temporary = path.with_file_name(format!("{file}_new"));
-    fs::write(&temporary, bytes)?;
-    fs::rename(temporary, path)?;
-    Ok(())
-}
-/// Starling: a file's bytes, the newest queued ones first.
-pub fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
-    match later::queued(path) {
-        Some(bytes) => Ok(bytes),
-        None => fs::read(path),
-    }
 }
 fn write_dat_now(path: &Path, tag: Tag) -> Result<()> {
     write_dat_as(path, tag, false)

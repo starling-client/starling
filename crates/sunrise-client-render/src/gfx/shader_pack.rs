@@ -1,4 +1,8 @@
 use super::*;
+#[path = "shader_pack/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 impl Renderer {
     /// Runs `post` over the world from now on (`None`: no pack), for the dimension `dimension`;
@@ -395,10 +399,6 @@ impl Renderer {
         }
         Ok(labels)
     }
-    /// Whether the packs loaded from now on draw terrain's depth before shading it.
-    pub fn set_pack_prepass(&self, on: bool) {
-        pack_post::set_prepass(on);
-    }
     /// What a shader pack's gbuffers programs read from Sunrise's geometry: the sky's, and
     /// terrain's in the pack's block atlas (made here when missing; none when it does not fit).
     pub fn pack_inputs(&mut self) -> sunrise_shaders::GameInputs {
@@ -479,22 +479,6 @@ impl Renderer {
                 .as_ref()?
                 .terrain_inputs(self.pack_terrain_flat),
         )
-    }
-    /// No shader pack, and none loaded or being made for any dimension: the next frame loads
-    /// the chosen one.
-    pub fn forget_shader_pack(&mut self) {
-        let _ = self.set_shader_pack(0, None, &[]);
-        self.pack_post = None;
-    }
-    /// Diagnostic distributions from the existing pass timers, without another profiler.
-    pub fn diagnostic_pass_times(&self) -> serde_json::Value {
-        let shader = match (&self.pack_post, &self.native) {
-            (Some((_, Some(post))), _) => post.timing.as_ref(),
-            (_, Some(native)) => native.timing.as_ref(),
-            _ => None,
-        };
-        serde_json::json!({"world":self.own_timing.as_ref().map(pack_timing::PassTiming::distributions),
-            "shader":shader.map(pack_timing::PassTiming::distributions)})
     }
     /// The macros this renderer gives shader packs: the GL extensions this device has
     /// (subgroups, when it has them), and the vendor, renderer and mipmap levels

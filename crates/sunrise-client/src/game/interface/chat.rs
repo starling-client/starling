@@ -1,8 +1,12 @@
 //! Chat, the command registries and the per-world state behind commands
 //! (game rules, the world clock, difficulty), bound to the game.
+#[path = "chat/starling.rs"]
+mod starling;
 #[cfg(test)]
 #[path = "chat/suggestion_completion_tests.rs"]
 mod suggestion_completion_tests;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 use super::{Game, Screen};
 use std::{
@@ -1333,29 +1337,6 @@ impl Game<'_> {
             screen.server_suggestions(&m, &c, id, range, list);
         }
     }
-    /// The whole input from the on-screen keyboard's editor (Android, game/touch/text_mirror.rs).
-    pub(super) fn chat_set_text(&mut self, text: &str, cursor: usize, anchor: usize) {
-        let m = Measure(&self.gui.atlas.font);
-        let c = Commands {
-            dispatcher: chat_tree(&self.remote),
-            registries: &self.ui.registries,
-        };
-        if let Some(screen) = self.ui.chat_screen.as_mut() {
-            screen.set_text(&m, &c, text, cursor, anchor);
-        }
-    }
-    /// The chat bar's Paste (touch.rs): the clipboard's text at the cursor, as Ctrl+V.
-    pub(super) fn chat_paste(&mut self) {
-        let m = Measure(&self.gui.atlas.font);
-        let c = Commands {
-            dispatcher: chat_tree(&self.remote),
-            registries: &self.ui.registries,
-        };
-        if let Some(screen) = self.ui.chat_screen.as_mut() {
-            let paste = sunrise_client::clipboard::EditShortcut::Paste;
-            screen.shortcut(&m, &c, paste, &mut self.clipboard);
-        }
-    }
     /// Text typed into the chat box (control socket `chat`).
     pub(super) fn chat_type(&mut self, text: &str) {
         let m = Measure(&self.gui.atlas.font);
@@ -1418,15 +1399,6 @@ impl Game<'_> {
                 focused,
             );
         }
-    }
-    /// The pointer where the chat lays its parts out: over the on-screen keyboard the chat is
-    /// drawn higher (`lift_over_keyboard`), so the point under a finger is that much lower in it.
-    fn chat_pointer(&self) -> (f32, f32) {
-        let scale = self.renderer.as_ref().map_or(1.0, |r| {
-            self.interface_batch([r.config.width, r.config.height])
-                .scale
-        });
-        (self.cursor.0, self.cursor.1 + self.chat_lift(scale))
     }
     pub(super) fn chat_scroll(&mut self, amount: f32) {
         let cursor = self.chat_pointer();

@@ -19,6 +19,10 @@ use crate::{
     translate_gbuffers, translate_shadow,
 };
 use crate::{GbuffersInputs, Macros, Pack, Preprocessed, Program, Properties, Target};
+#[path = "post/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// Which group of 2.1 a program belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,17 +163,6 @@ const SKY_TEXTURED: [&str; 3] = [
 /// `gbuffers_entities` and its fallbacks (2.3).
 const ENTITIES: [&str; 4] = [
     "gbuffers_entities",
-    "gbuffers_textured_lit",
-    "gbuffers_textured",
-    "gbuffers_basic",
-];
-
-/// `gbuffers_damagedblock` and its fallbacks (2.3, the spec's table: it falls back to
-/// `gbuffers_terrain`, as in Iris). Without the chain a pack with no program of its own, Starling
-/// Visuals among them, drew no breaking cracks at all.
-const DAMAGED_BLOCK: [&str; 5] = [
-    "gbuffers_damagedblock",
-    "gbuffers_terrain",
     "gbuffers_textured_lit",
     "gbuffers_textured",
     "gbuffers_basic",
@@ -618,45 +611,6 @@ pub struct Post {
     /// translating it panicked), with the reasons. The game draws with the next program of its
     /// fallback chain, or skips a composite pass; this is what the log and the pack report list.
     pub skipped: Vec<Skipped>,
-}
-
-/// A program that did not load.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Skipped {
-    /// The program (`gbuffers_water`, `composite3`, `composite3_a` for a compute stage).
-    pub name: String,
-    /// Its errors, as `file:line: message`.
-    pub reasons: Vec<String>,
-}
-
-/// Records that program `name` did not load, with its `reasons`.
-fn skip(post: &mut Post, name: &str, reasons: Vec<String>) {
-    post.notes.extend(reasons.iter().cloned());
-    post.notes.push(format!("{name}: skipped"));
-    post.skipped.push(Skipped {
-        name: name.to_owned(),
-        reasons,
-    });
-}
-
-/// `f` with a panic inside it turned into an error: a pack is not the game's own code, and a
-/// program that makes the translator panic loses that program, not the pack.
-fn contained<T>(
-    file: &str,
-    f: impl FnOnce() -> Result<T, Vec<crate::Error>>,
-) -> Result<T, Vec<crate::Error>> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
-        let text = payload
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| payload.downcast_ref::<&str>().copied())
-            .unwrap_or("unknown");
-        Err(vec![crate::Error {
-            file: file.to_owned(),
-            line: 0,
-            message: format!("internal error (translator panicked): {text}"),
-        }])
-    })
 }
 
 fn located_errors(errors: &[crate::Error]) -> Vec<String> {

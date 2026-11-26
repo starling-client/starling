@@ -8,6 +8,10 @@ use std::collections::{BTreeMap, VecDeque};
 #[cfg(test)]
 #[path = "arena/source_tests.rs"]
 mod source_tests;
+#[path = "arena/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// Ranges are rounded up to this many vertices to limit fragmentation, and
 /// start at multiples of it (`flat` names sections by these blocks).
@@ -176,18 +180,6 @@ impl Arena {
     pub fn translucent_indices(device: &wgpu::Device, capacity: u64) -> Self {
         let usage = wgpu::BufferUsages::INDEX;
         Self::with_usage(device, 4, capacity, usage, LARGE_PAGE_BYTES)
-    }
-    /// World-space ray-tracing positions (`BLAS_INPUT`): the triangle soup `rt`
-    /// builds one BLAS per section over. Never compacted: a range stays valid
-    /// until its section is released, unlike the render arenas' ranges.
-    pub fn ray_tracing(device: &wgpu::Device) -> Self {
-        Self::with_usage(
-            device,
-            12,
-            1 << 16,
-            wgpu::BufferUsages::BLAS_INPUT,
-            PAGE_BYTES,
-        )
     }
     /// The sorted-index arena and, when `split`, the translucent arena
     /// (vertices of `stride`) with large pages, which no shader binds;
@@ -738,44 +730,6 @@ impl Arena {
             .filter_map(|p| self.keep_spare(p))
             .collect()
     }
-    /// Makes the first page's buffer ahead of the first upload (on the level
-    /// loading screen), where the arena has no page and no spare: the first
-    /// sections then do not wait for the driver to allocate it.
-    pub fn prewarm(&mut self, device: &wgpu::Device) {
-        if !self.keeps_spare || self.spare.is_some() || self.pages.iter().any(Option::is_some) {
-            return;
-        }
-        if let Some((buffer, false)) = self.create(device, self.initial_capacity, false) {
-            self.spare = Some(buffer);
-        }
-    }
-    /// The vertices a page grows to at most (`growth_limit`, within `page_limit`).
-    fn ceiling(&self) -> u64 {
-        self.growth_limit
-            .map_or(self.page_limit, |limit| limit.min(self.page_limit))
-    }
-    /// The spare buffer (`spare`) for a page of `capacity` vertices.
-    fn take_spare(&mut self, capacity: u64) -> Option<wgpu::Buffer> {
-        if capacity == self.initial_capacity {
-            self.spare.take()
-        } else {
-            None
-        }
-    }
-    /// An emptied page's buffer, unless it becomes the spare (`spare`): one in
-    /// video memory of the first page's size, where none is kept yet.
-    fn keep_spare(&mut self, page: Page) -> Option<wgpu::Buffer> {
-        if self.keeps_spare
-            && self.spare.is_none()
-            && !page.host
-            && page.capacity == self.initial_capacity
-        {
-            self.spare = Some(page.buffer);
-            None
-        } else {
-            Some(page.buffer)
-        }
-    }
 }
 
 /// The bytes past which pages of `page_bytes` stop growing: 32 MiB on 64-bit
@@ -793,12 +747,6 @@ fn page_ceiling(page_bytes: u64) -> u64 {
     } else {
         page_bytes
     }
-}
-/// The bytes past which pages of `page_bytes` stop growing: all of them here
-/// (see the 64-bit Android one).
-#[cfg(not(all(target_os = "android", target_pointer_width = "64")))]
-fn page_ceiling(page_bytes: u64) -> u64 {
-    page_bytes
 }
 
 /// Frames a released page waits before it is freed: by then the GPU is done with the frames that
@@ -870,19 +818,6 @@ pub(super) fn try_create(
     });
     // Native error scopes resolve at once.
     pollster::block_on(scope.pop()).is_none().then_some(buffer)
-}
-
-/// `try_create` for a page's buffer, in a span of its own: a phone's driver can take hundreds of
-/// milliseconds here. Adapted from Vasysik/sunrise-android (`arena_buffer_create`), MIT.
-fn create_page(
-    device: &wgpu::Device,
-    label: &str,
-    size: u64,
-    usage: wgpu::BufferUsages,
-) -> Option<wgpu::Buffer> {
-    crate::spans::time("arena_buffer_create", || {
-        try_create(device, label, size, usage)
-    })
 }
 
 #[cfg(test)]

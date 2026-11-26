@@ -6,6 +6,10 @@
 //! rewards; the open and filter settings are saved with the player.
 #[path = "recipe_book/mod_screen.rs"]
 mod mod_screen;
+#[path = "recipe_book/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 use super::{Game, Screen};
 use mod_api::{RecipeTransferCheck, RecipeTransferResult};
@@ -2488,16 +2492,5 @@ mod screen_room_tests {
                 assert_eq!(game.inventory_origin(&batch), (194.0, 37.0));
             });
         });
-    }
-}
-
-impl Game<'_> {
-    /// Starling: the search box while it takes the keys, for the keyboard's editor on Android
-    /// (touch/text_mirror.rs).
-    pub(super) fn recipe_search_box(&mut self) -> Option<&mut EditBox> {
-        if !self.recipe_search_focused() {
-            return None;
-        }
-        self.recipe_ui.search.as_mut()
     }
 }

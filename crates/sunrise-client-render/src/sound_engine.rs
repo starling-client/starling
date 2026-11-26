@@ -17,6 +17,10 @@ use std::{
 use sunrise_core::random::LegacyRandom;
 
 pub mod hooks;
+#[path = "sound_engine/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// `SoundSource` indices (vanilla order).
 pub const MASTER: usize = 0;
@@ -1105,11 +1109,6 @@ fn handle_channel(h: &Handle) -> Option<ChannelId> {
     h.channel
 }
 impl SoundEngine {
-    /// Starling: a fresh unseeded random (`RandomSource.create()`), as Sunrise's
-    /// `SoundEngine::unseeded` gave the native mods made for it.
-    pub fn unseeded() -> LegacyRandom {
-        LegacyRandom::new(crate::random_source::unique_seed())
-    }
     pub fn new(registry: SoundRegistry) -> Self {
         Self {
             registry,

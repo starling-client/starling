@@ -162,6 +162,10 @@ const RULES: &[VanillaRule] = &[
     b("universal_anger", "mobs", false),
     b("water_source_conversion", "updates", true),
 ];
+#[path = "gamerules/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 /// GameRules.MAX_MINECART_SPEED (26.3), available with minecart improvements.
 const MAX_MINECART_SPEED: VanillaRule = i("max_minecart_speed", "misc", 8, 1, 1000);
 pub const MINECART_IMPROVEMENTS: &str = "minecraft:minecart_improvements";
@@ -489,11 +493,6 @@ impl GameRules {
     /// Look up a definition in this rule set's registry.
     pub fn rule(&self, name: &str) -> Option<&Rule> {
         self.available_rules().find(|rule| rule.matches(name))
-    }
-    /// Starling: whether a boolean rule is on, as Sunrise's `GameRules::bool` answered and native
-    /// mods made for it ask (`game.ui.rules.bool("block_drops")`).
-    pub fn bool(&self, name: &str) -> bool {
-        matches!(self.get(name), Some(Value::Bool(true)))
     }
     pub fn get(&self, name: &str) -> Option<Value> {
         let index = self

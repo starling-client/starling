@@ -15,6 +15,10 @@ use crate::{
 };
 use std::collections::BTreeMap;
 use sunrise_shader_api::{OptionKind, PageItem};
+#[path = "shader_ui/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// A page of the screen: the pack list, or screen `.0` of the picked pack (`screens`, 0 its
 /// main one).
@@ -285,30 +289,6 @@ fn parts(item: Item, s: &Settings, screens: &[PackScreen]) -> (String, Option<St
     }
 }
 
-/// The resolution a pack runs at: Auto holds a heavy pack below what the player chose.
-fn resolution_value(s: &Settings) -> String {
-    let scale = s.sunrise.resolution_scale;
-    let limit = (crate::graphics::auto_shader_scale() * 100.0).round() as u32;
-    let limited = s.sunrise.shader_choice().is_some_and(|(pack, profile)| {
-        profile == crate::graphics::AUTO_PROFILE && !crate::graphics::light_shader_pack(&pack)
-    }) && scale > limit;
-    if limited {
-        format!("{limit}% (Auto)")
-    } else {
-        format!("{scale}%")
-    }
-}
-
-/// The profile of the picked pack that runs, as the row shows it.
-fn pack_profile_value(s: &Settings) -> String {
-    let profile = s.sunrise.shader_choice().map(|c| c.1).unwrap_or_default();
-    match profile.as_str() {
-        "" => lang::get("Pack Default"),
-        crate::graphics::AUTO_PROFILE => lang::get("Auto"),
-        profile => profile.to_owned(),
-    }
-}
-
 /// A tick box's state, for a pack (picked) or an on/off option.
 fn switch(item: Item, s: &Settings) -> Option<bool> {
     match item {
@@ -512,39 +492,6 @@ pub(crate) struct ShaderScreen {
 }
 
 impl ShaderScreen {
-    /// The profiles the picked pack lists, after Auto (on a phone) and the pack's defaults:
-    /// read again when a pack is picked or the options open.
-    pub(crate) fn refresh_profiles(&mut self, s: &Settings) {
-        let dir = std::env::current_dir()
-            .unwrap_or_default()
-            .join(crate::shader_pack_list::DIR);
-        self.profiles = vec![String::new()];
-        if cfg!(target_os = "android") {
-            self.profiles
-                .insert(0, crate::graphics::AUTO_PROFILE.to_owned());
-        }
-        if let Some((pack, _)) = s.sunrise.shader_choice()
-            && let Ok(pack) = sunrise_shaders::Pack::open(&dir.join(pack))
-        {
-            let text = pack.read_text("shaders.properties").unwrap_or_default();
-            let macros = sunrise_shaders::Macros::standard();
-            let properties = sunrise_shaders::Properties::parse(&text, &macros);
-            // Only the profiles that set a switch or a number: some packs list labels or
-            // single choices (a tonemap) under `profile.` and those pick nothing to run.
-            let ranked = sunrise_shaders::Values::profiles_by_cost(
-                &properties,
-                &sunrise_shaders::options(&pack),
-            );
-            self.profiles.extend(
-                properties
-                    .entries
-                    .iter()
-                    .filter_map(|e| e.key.strip_prefix("profile."))
-                    .filter(|name| ranked.iter().any(|(n, _)| n == name))
-                    .map(str::to_owned),
-            );
-        }
-    }
     /// The picked `shaders/` pack's options are saved: what Undo has to put back over.
     fn saving(&mut self, s: &Settings) {
         if let Some(o) = s.shader_options.as_ref() {

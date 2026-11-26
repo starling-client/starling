@@ -505,18 +505,6 @@ pub enum Trust {
 }
 
 impl Index {
-    /// Starling: `other`'s projects and takedowns added to this index's, for a catalog that
-    /// lists two registries (Sunrise's and Horizon's). A project both name is this index's.
-    pub fn merge(&mut self, other: Index) {
-        for project in other.projects {
-            if self.project(&project.id).is_none() {
-                self.projects.push(project);
-            }
-        }
-        self.revoked.extend(other.revoked);
-        self.left_out.extend(other.left_out);
-    }
-
     /// Parses an index and keeps what passes [`Index::check`]'s rules: an entry that breaks one
     /// is left out with its reason ([`Index::left_out`]). Only text that is not an index, or one
     /// of a newer schema, fails.
@@ -1482,6 +1470,10 @@ fn names(caps: &[Capability]) -> String {
 }
 
 pub mod browser_state;
+#[path = "index/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 mod collections;
 pub use collections::{Collection, MAX_COLLECTION_MEMBERS, Member};
 mod dependencies;

@@ -11,39 +11,19 @@ use std::{
 };
 
 pub const FILE: &str = "sunrise-mods.txt";
+#[path = "mod_list/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 /// The folder holding `.smod` files, beside `options.txt`.
 pub const DIR: &str = "sunrise-mods";
 /// Where the launcher installs native mods (`<id>.smod`), beside [`DIR`]. They run only in a
 /// game the launcher built with them.
 pub const NATIVE_DIR: &str = "sunrise-native-mods";
 
-/// Whether a compiled native build (Starling's Compile) is the one for the native mods on now.
-/// A build that says the SHA-256 of the request it was compiled from (`sent`) is current only for
-/// that same request (`request`), so a mod replaced under the same id (a new voice chat of the
-/// same id, with buttons the old one lacked) makes it out of date and Compile is offered again.
-/// A build from before builds said it, or with no request to compare, goes by the mods' ids.
-pub fn native_build_current(
-    sent: Option<&str>,
-    built: &BTreeSet<String>,
-    wanted: &BTreeSet<String>,
-    request: Option<&str>,
-) -> bool {
-    match (sent, request) {
-        (Some(sent), Some(request)) => sent == request,
-        _ => built == wanted,
-    }
-}
 /// Why a native mod installed in [`NATIVE_DIR`] doesn't run in this game.
 #[cfg(not(target_os = "android"))]
 pub const NOT_BUILT: &str = "Installed, not built into this game: build the game with it in the launcher (Settings > Native mods), then play the instance that build is in.";
-#[cfg(target_os = "android")]
-pub const NOT_BUILT: &str =
-    "Installed, not in this game yet: Compile builds the game with it on Starling's build server.";
-/// [`NOT_BUILT`] in the player's language, as the Mods page's tooltip says it.
-#[cfg(not(target_os = "android"))]
-pub const NOT_BUILT_TIP: &str = "sunrise.mods.not_built_tip";
-#[cfg(target_os = "android")]
-pub const NOT_BUILT_TIP: &str = "starling.mods.native.not_built_tip";
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModList {
@@ -61,15 +41,6 @@ pub struct ModList {
     pub info: BTreeMap<String, ModInfo>,
     /// Android: which game runs and which the next start runs, above the mods.
     pub native_game: Option<NativeGame>,
-}
-
-/// Android: the game with native mods as the Mods page says it (game/native_builds.rs): the APK's
-/// own or a build with some mods compiled in, then what the player can do about it.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct NativeGame {
-    /// Lines of text, each with whether it is a warning (red).
-    pub lines: Vec<(String, bool)>,
-    pub buttons: Vec<(String, NativeGameAct)>,
 }
 
 /// A button of [`NativeGame`].
@@ -517,35 +488,11 @@ impl ModList {
 
 #[cfg(test)]
 mod tests {
+    #[path = "starling.rs"]
+    mod starling;
+    #[allow(unused_imports)]
+    use self::starling::*;
     use super::*;
-
-    /// A native mod replaced under the same id makes the build out of date; a build from before
-    /// builds said their request goes by the ids, as it always did.
-    #[test]
-    fn a_changed_native_mod_of_the_same_id_needs_a_new_compile() {
-        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
-        let voice = ids(&["voicechat"]);
-        assert!(native_build_current(
-            Some("aaa"),
-            &voice,
-            &voice,
-            Some("aaa")
-        ));
-        assert!(!native_build_current(
-            Some("aaa"),
-            &voice,
-            &voice,
-            Some("bbb")
-        ));
-        assert!(native_build_current(None, &voice, &voice, Some("bbb")));
-        assert!(!native_build_current(
-            None,
-            &voice,
-            &ids(&["voicechat", "wrench"]),
-            Some("bbb")
-        ));
-        assert!(native_build_current(Some("aaa"), &voice, &voice, None));
-    }
 
     #[test]
     fn interrupted_save_keeps_the_previous_mod_list() {

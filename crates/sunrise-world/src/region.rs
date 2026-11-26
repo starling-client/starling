@@ -10,6 +10,10 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 use sunrise_core::position::ChunkPos;
+#[path = "region/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// A record exceeded the region format's compressed size admission limit.
 #[derive(Debug)]
@@ -694,12 +698,6 @@ impl RegionWriter {
     pub fn finish(self) -> io::Result<()> {
         // Hard-link publication fails atomically if another writer won the name.
         self.finish_with(|temporary, destination| fs::hard_link(temporary, destination))
-    }
-
-    /// Finish into an upgrade staging path reserved by the caller. Android's
-    /// shared storage does not support hard links, including within one folder.
-    pub(crate) fn finish_staged(self) -> io::Result<()> {
-        self.finish_with(|temporary, destination| fs::rename(temporary, destination))
     }
 
     fn finish_with(

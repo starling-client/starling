@@ -20,6 +20,10 @@ use sunrise_client::{
     ui,
 };
 use sunrise_protocol::{packets::configuration::ResourcePackPush, servers};
+#[path = "server_packs/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// `ClientCommonPacketListenerImpl.PackConfirmScreen`: the packs it asks
 /// about, whether the last one is required, and the server's message.
@@ -1116,12 +1120,5 @@ mod tests {
                 );
             });
         });
-    }
-}
-
-impl ServerPackState {
-    /// Starling: the prompt shows: it takes the back key and the touch controls' screen state.
-    pub(super) fn prompting(&self) -> bool {
-        self.prompt.is_some()
     }
 }

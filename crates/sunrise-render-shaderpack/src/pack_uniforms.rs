@@ -683,12 +683,6 @@ pub fn shadow_culling_at(light: Vec3, camera: DVec3, shadow: &Shadow) -> Mat4 {
     depth * gl * view
 }
 
-/// The view of a shadow map drawn with `view` from `drawn`, seen from `camera`. A pack gives it
-/// player space, which moves with the camera; the map stays where it was drawn.
-fn kept_shadow_view(view: Mat4, drawn: DVec3, camera: DVec3) -> Mat4 {
-    view * Mat4::from_translation((camera - drawn).as_vec3())
-}
-
 /// How far toward the light a `shadowMapFov` projection starts, in blocks.
 pub const SHADOW_EYE: f32 = 100.0;
 
@@ -1077,12 +1071,6 @@ impl FrameUniforms {
         self.frame = (self.frame + 1) % 720_720;
     }
 
-    /// Whether the shadow map was drawn near `camera`, so a frame may keep it: a teleport draws
-    /// it again at once.
-    pub fn shadow_near(&self, camera: DVec3) -> bool {
-        self.shadow_drawn
-            .is_some_and(|(drawn, ..)| drawn.distance_squared(camera) < 16.0 * 16.0)
-    }
     /// `hz_fog_color` and `hz_fog` of the translator's block (the compatibility `gl_Fog`).
     /// Its density is `fogDensity`'s (0): Iris 1.11.7 gave `gl_Fog.density` 0, not 1, in every
     /// program kind our probe pack read it in (gbuffers_terrain and deferred, in a cave and in
@@ -1272,6 +1260,10 @@ pub fn index_in(name: &str, geometry: bool) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[path = "starling.rs"]
+    mod starling;
+    #[allow(unused_imports)]
+    use self::starling::*;
 
     use super::*;
 
@@ -1454,19 +1446,6 @@ mod tests {
         assert!(body(90.0, 30.0).abs_diff_eq(Vec3::new(-100.0, 0.0, 0.0), 1e-3));
     }
 
-    #[test]
-    fn a_kept_shadow_map_stays_where_it_was_drawn() {
-        let view = Mat4::from_translation(Vec3::new(1.0, 2.0, -128.0));
-        let (drawn, camera) = (
-            DVec3::new(3500.25, 70.0, -12.5),
-            DVec3::new(3501.0, 70.5, -11.0),
-        );
-        let world = DVec3::new(3510.0, 64.0, -20.0);
-        let then = view.transform_point3((world - drawn).as_vec3());
-        let now =
-            kept_shadow_view(view, drawn, camera).transform_point3((world - camera).as_vec3());
-        assert!((then - now).length() < 1e-3, "{then} {now}");
-    }
     #[test]
     fn the_shadow_camera_looks_down_from_the_light_in_steps() {
         let shadow = Shadow::default();
@@ -2923,6 +2902,10 @@ fn dynamic_light_index(name: &str) -> Option<usize> {
 #[cfg(test)]
 #[path = "pack_uniforms/ftransform_test.rs"]
 mod ftransform_test;
+#[path = "pack_uniforms/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 #[cfg(test)]
 #[path = "pack_uniforms/lightning_bolt_test.rs"]
 mod lightning_bolt_test;

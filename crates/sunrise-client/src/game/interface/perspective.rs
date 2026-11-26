@@ -161,6 +161,10 @@ fn body_visible(invisible: bool, team: Option<&sunrise_client::scoreboard::Team>
 }
 /// The player's model type for each resources root it was asked for.
 static PLAYER_TYPES: Mutex<Vec<(PathBuf, Option<Arc<MobType>>)>> = Mutex::new(Vec::new());
+#[path = "perspective/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// The player's model type (`PlayerModel` with the default skin), read once
 /// per resources root: `entity-models.json` doesn't change while the game
@@ -994,20 +998,6 @@ impl Game<'_> {
             None => (self.cursor, 0.0),
         };
         self.player_preview(batch, [x0, y0, x1, y1], size, offset_y, cursor, spin);
-    }
-    fn player_preview(
-        &self,
-        batch: &mut HudBatch,
-        rect: [f32; 4],
-        size: f32,
-        offset_y: f32,
-        cursor: (f32, f32),
-        spin: f32,
-    ) {
-        if let Some(m) = self.player_model.as_ref() {
-            let data = self.res.mob_data();
-            self.mob_preview(m, data, batch, rect, size, offset_y, cursor, spin, true);
-        }
     }
     /// `m` as the inventory draws the player, with `data` (the title screen's player too, which
     /// may come before the world's mob data). `in_world`: as the player is now, with what they

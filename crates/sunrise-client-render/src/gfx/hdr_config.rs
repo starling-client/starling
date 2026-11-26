@@ -1,4 +1,8 @@
 use super::*;
+#[path = "hdr_config/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 impl Renderer {
     /// HDR calibration's test picture (`crate::hdr_calibration`) while it runs, else None.
@@ -46,19 +50,6 @@ impl Renderer {
                 hdr.peak.round()
             ),
             None => "HDR: not offered by this display".into(),
-        }
-    }
-    /// Removes `marker` (`graphics::RENDERER_MARKER`, written before this renderer opened its
-    /// device) once a frame has been presented: the start went through.
-    pub fn forget_start_marker(&mut self, marker: std::path::PathBuf) {
-        self.start_marker = Some(marker);
-    }
-    /// Keeps the pipelines the driver compiled for the next start (`vulkan_pipeline_cache`): on
-    /// Android's Vulkan, written on a thread of its own; elsewhere nothing.
-    pub fn save_pipeline_cache(&self) {
-        #[cfg(target_os = "android")]
-        if self.info.backend == wgpu::Backend::Vulkan {
-            wgpu::hal::vulkan::disk_cache::save();
         }
     }
     /// The HDR Lighting setting (`Hdr::look`).

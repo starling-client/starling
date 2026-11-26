@@ -9,6 +9,10 @@ use crate::{
 
 /// MenuTabBar.HEIGHT: the header above the tab area.
 const TAB_BAR: f32 = 24.0;
+#[path = "create_world/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 /// HeaderAndFooterLayout's default footer height.
 const FOOTER: f32 = 33.0;
 const TABS: [&str; 3] = [
@@ -72,10 +76,6 @@ pub struct WorldOptions {
     /// button cycles the extended list, with Debug Mode.
     pub alt_down: bool,
 }
-fn normal_world() -> crate::save::WorldPreset {
-    crate::save::WorldPreset::Normal
-}
-
 impl crate::save::WorldPreset {
     /// `WorldPresetTags.EXTENDED`: the list the button cycles while Alt is held.
     pub const EXTENDED: [Self; 6] = [

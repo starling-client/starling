@@ -7,73 +7,10 @@ use std::{
 };
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
-static RECORDING: AtomicBool = AtomicBool::new(false);
-type Totals = (u64, f64, f64, f32);
-type Trace = std::collections::BTreeMap<(&'static str, &'static str), Totals>;
-static TRACE: std::sync::Mutex<Trace> = std::sync::Mutex::new(Trace::new());
-
-/// Opt-in bounded, aggregate timings. Names are engine constants, never world data.
-pub fn record_timings(on: bool) {
-    DIAGNOSTIC_HERE.with(|h| h.set(on));
-    RECORDING.store(on, Ordering::Relaxed);
-    TRACE.lock().unwrap_or_else(|e| e.into_inner()).clear();
-}
-fn collect(role: &'static str, span: Span) {
-    if !RECORDING.load(Ordering::Relaxed) {
-        return;
-    }
-    let mut trace = TRACE.lock().unwrap_or_else(|e| e.into_inner());
-    // Bounds the registry even if future instrumentation adds dynamic stages.
-    if trace.len() >= 256 && !trace.contains_key(&(role, span.name)) {
-        return;
-    }
-    let total = trace.entry((role, span.name)).or_default();
-    total.0 += 1;
-    total.1 += f64::from(span.ms);
-    total.2 += f64::from(span.cpu_ms);
-    total.3 = total.3.max(span.ms);
-}
-pub fn drain_timings() -> serde_json::Value {
-    let trace = std::mem::take(&mut *TRACE.lock().unwrap_or_else(|e| e.into_inner()));
-    serde_json::Value::Array(
-        trace
-            .into_iter()
-            .map(|((role, stage), (calls, wall, cpu, max))| {
-                serde_json::json!({"role": role, "stage": stage, "calls": calls,
-            "wall_ms": wall, "thread_cpu_ms": cpu, "max_ms": max})
-            })
-            .collect(),
-    )
-}
-/// A worker task measured independently of the render/server thread's spans.
-pub fn job<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
-    if !RECORDING.load(Ordering::Relaxed) {
-        return f();
-    }
-    let (started, cpu) = (Instant::now(), thread_cpu());
-    let value = f();
-    let ms = started.elapsed().as_secs_f32() * 1000.0;
-    let cpu_ms = thread_cpu()
-        .zip(cpu)
-        .map_or(ms, |(end, start)| (end - start).as_secs_f32() * 1000.0);
-    let thread = std::thread::current();
-    let role = if thread.name() == Some("Server thread") {
-        "server"
-    } else {
-        "worker"
-    };
-    collect(
-        role,
-        Span {
-            name,
-            ms,
-            cpu_ms,
-            depth: 0,
-        },
-    );
-    value
-}
-
+#[path = "spans/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 const ONGOING: u8 = 1;
 const FRAME: u8 = 2;
 thread_local! {
@@ -116,39 +53,6 @@ pub fn enable(on: bool) {
 /// Whether spans are being recorded.
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
-}
-/// Records `ms` under `name`, measured by the caller (the sum of a loop's parts); its wall time
-/// stands for its CPU time.
-pub fn add(name: &'static str, ms: f32) {
-    if recording_here() {
-        emit(Span {
-            name,
-            ms,
-            cpu_ms: ms,
-            depth: DEPTH.with(Cell::get),
-        });
-    }
-}
-/// Raw spans belong only to threads whose existing consumer drains them. Recording
-/// aggregate diagnostics must not grow a worker's thread-local buffer forever.
-fn emit(span: Span) {
-    if RECORDING.load(Ordering::Relaxed) {
-        let role = if std::thread::current().name() == Some("Server thread") {
-            "server"
-        } else if HERE.with(Cell::get) != 0 || DIAGNOSTIC_HERE.with(Cell::get) {
-            "render"
-        } else {
-            "worker"
-        };
-        collect(role, span);
-    }
-    if enabled()
-        || HERE.with(Cell::get) != 0
-        || timeline::on()
-        || (RECORDING.load(Ordering::Relaxed) && DIAGNOSTIC_HERE.with(Cell::get))
-    {
-        push(span);
-    }
 }
 /// Record this thread's spans even with spans off, their wall time only (no CPU clock read):
 /// what the render thread's slow frames spent their time in. The thread takes them every
@@ -816,6 +720,10 @@ pub mod startup {
 
 #[cfg(test)]
 mod tests {
+    #[path = "starling.rs"]
+    mod starling;
+    #[allow(unused_imports)]
+    use self::starling::*;
     use super::Span;
     use std::sync::{Mutex, MutexGuard};
 
@@ -825,38 +733,6 @@ mod tests {
     fn spans_switch() -> MutexGuard<'static, ()> {
         static SWITCH: Mutex<()> = Mutex::new(());
         SWITCH.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    #[test]
-    fn diagnostic_aggregates_do_not_retain_worker_raw_spans() {
-        let _switch = spans_switch();
-        super::record_timings(true);
-        super::time("render_step", || ());
-        assert_eq!(super::take_raw()[0].name, "render_step");
-        std::thread::spawn(|| {
-            for _ in 0..10000 {
-                super::time("worker_step", || ());
-            }
-            assert!(super::take_raw().is_empty());
-        })
-        .join()
-        .unwrap();
-        let rows = super::drain_timings();
-        assert!(
-            rows.as_array()
-                .unwrap()
-                .iter()
-                .any(|row| row["stage"] == "render_step" && row["role"] == "render")
-        );
-        let step = rows
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["stage"] == "worker_step")
-            .unwrap();
-        assert_eq!(step["calls"], 10000);
-        assert_eq!(step["role"], "worker");
-        super::record_timings(false);
     }
 
     /// Samples taken inside a named span carry its id, with spans off, and the span is left after it.

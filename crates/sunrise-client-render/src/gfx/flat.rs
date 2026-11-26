@@ -22,6 +22,10 @@ use super::arena::GRAIN;
 
 #[path = "binding_cache.rs"]
 mod binding_cache;
+#[path = "flat/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 use binding_cache::BindingKey;
 
 /// One section draw for `flatten.wgsl`: index count, first sorted index (or
@@ -184,20 +188,6 @@ pub struct Flat {
 /// sides it shows the eye (`mesher::Sides`), so it counts sections.
 pub const MIN_SECTIONS: usize = 1600;
 
-/// The same on Adreno's Vulkan, for frames without a shader pack. Vasysik's Android fork measured
-/// an Adreno 710 at 2560x1600 and 16 chunks: 46.05 ms of GPU time (20.09 FPS) with per-section
-/// indirect draws, 22.30 ms (38.37 FPS) drawn flat.
-const ADRENO_MIN_SECTIONS: usize = 512;
-
-/// Where `for_vanilla` holds: sections in view from which a frame is drawn flat.
-pub fn vanilla_min_sections(info: &wgpu::AdapterInfo) -> usize {
-    if super::adreno::adreno_vulkan(info) {
-        ADRENO_MIN_SECTIONS
-    } else {
-        MIN_SECTIONS
-    }
-}
-
 /// Whether flat draws exist: vertex shaders can read storage buffers (an arena
 /// page is no larger than a storage binding). A shader pack's terrain draws flat
 /// wherever they do, since only there does it read each quad's face normal and
@@ -227,13 +217,6 @@ pub fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
 /// Qualcomm `QCOM` (0x4D4F4351); Vulkan, 0x5143.
 pub fn is_adreno_dx12(info: &wgpu::AdapterInfo) -> bool {
     info.backend == wgpu::Backend::Dx12 && matches!(info.vendor, 0x4d4f_4351 | 0x5143)
-}
-
-/// PowerVR Rogue's Vulkan driver (the GE8320's 1.13) draws terrain in pieces with per-section
-/// draws, without an error: flat frames need neither `first_instance` nor a vertex offset.
-pub fn is_powervr_vulkan(info: &wgpu::AdapterInfo) -> bool {
-    info.backend == wgpu::Backend::Vulkan
-        && (info.vendor == 0x1010 || info.name.contains("PowerVR"))
 }
 
 /// A released Mesa version from its driver info, allowing distribution suffixes.

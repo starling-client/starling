@@ -1,4 +1,8 @@
 use super::*;
+#[path = "entity_draw/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// entity.wgsl after the OverlayTexture constants and the particle overlay marker it reads.
 pub(super) fn entity_shader() -> String {
@@ -167,14 +171,6 @@ pub(super) fn static_entity_shader() -> String {
 }
 
 impl Renderer {
-    /// Whether this renderer's device was armed for hardware ray tracing (ray queries):
-    /// the adapter offered `EXPERIMENTAL_RAY_QUERY` and Ray Tracing (experimental) was
-    /// switched on when the device opened (#470).
-    pub fn ray_tracing(&self) -> bool {
-        self.device
-            .features()
-            .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
-    }
     /// Uploads one generation of prepared geometry. A failed upload leaves the previous
     /// generation in place.
     pub fn install_prepared_models(

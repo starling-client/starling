@@ -1,6 +1,10 @@
 //! Startup shared by the gameplay library and its executable.
+#[path = "entry/starling.rs"]
+mod starling;
 #[path = "sunrise_look.rs"]
 mod sunrise_look;
+#[allow(unused_imports)]
+pub use self::starling::*;
 use crate::{crash, game, logging};
 use sunrise_mod_package::selection::{Argument, LaunchArguments};
 pub(crate) mod dedicated_arguments;
@@ -54,16 +58,6 @@ pub fn prepare() -> Startup {
         options,
         _capture: capture,
     }
-}
-
-/// Runs once the log is open (Android's start-up notes, its platform set-up that logs); set before [`start`].
-static AFTER_LOG: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>> = std::sync::Mutex::new(None);
-
-/// Register what runs once the log is open (see `AFTER_LOG`).
-pub fn set_after_log(hook: impl FnOnce() + Send + 'static) {
-    *AFTER_LOG
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(hook));
 }
 
 /// Refuse startup if any merged copy could not be installed, before loading any mod.

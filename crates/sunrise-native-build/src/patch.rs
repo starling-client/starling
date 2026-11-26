@@ -12,6 +12,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use sunrise_platform::mod_build::api_gen;
+#[path = "patch/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// The patch crates' name (a lower game crate's is `<name>_<crate>`): the copies' ids and the library entry's
 /// `--extern` use it. It is not `sunrise_patch`, the name of the library built from them: a library and a crate
@@ -115,12 +119,6 @@ fn extras(bundles: &[&Bundle]) -> Result<api_gen::patch::Extras, String> {
         }
     }
     Ok(extras)
-}
-
-/// The horizon-mixins tool at `identity`, fetched or built once per pin (for a program that only
-/// readies it, as Starling's Android store base does before its offline builds).
-pub fn mixins_tool(rust: &dyn Toolchain, identity: &MixinsIdentity) -> Result<PathBuf, String> {
-    super::mixins_patch::tool(rust, identity)
 }
 
 /// The patched sources of `projects`' `[[native.mixin]]` rows, supports modules and bridges,

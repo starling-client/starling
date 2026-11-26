@@ -1,20 +1,13 @@
 //! The mouse in play: the look it turns, the pointer grab (`MouseHandler.grabMouse` /
 //! `releaseMouse`), the cursor icon, and pausing a world whose window loses focus.
 use super::*;
+#[path = "pointer_capture/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 fn studio_suppresses_focus_pause(replay_active: bool, freecam_active: bool) -> bool {
     replay_active || freecam_active
-}
-
-/// Whether `settle_after_run` grabs again: a window whose grab is the system's (a winit grab
-/// mode) holds it exactly while the game has it grabbed. Android's grab is the activity's pointer
-/// capture, never a grab mode (`capture` leaves `capture_mode` at None), so there the two never
-/// match: grabbing again every frame asked Android for the capture some 120 times a second, threw
-/// each frame's first mouse move away (`set_ignore_first_move`) and pressed the held keys again
-/// (`restore_held_keys`). The view stuttered and jumped with a mouse (#467, #499), and a key held
-/// down (sprint's Ctrl) was pressed anew every frame.
-fn regrab_after_run(android: bool, internal_grab: bool, captured: bool, grab_mode: bool) -> bool {
-    !android && !internal_grab && captured != grab_mode
 }
 
 impl Game<'_> {
@@ -57,25 +50,6 @@ impl Game<'_> {
             .handle_accumulated_movement(time, active, grabbed, look)
         {
             self.look_turn(xo, yo);
-        }
-    }
-    /// The mouse's raw motion (`DeviceEvent::MouseMotion`, or Android's from the input hook):
-    /// MouseHandler.onMove with the pointer grabbed, applied once per frame.
-    pub(super) fn grabbed_mouse_motion(&mut self, x: f64, y: f64) {
-        // A composited view renders offscreen but its keyboard/mouse owner still
-        // controls a visible native window. A headless offscreen run never does.
-        if self.pending_save.is_none()
-            && self.captured
-            && self.focused
-            && !self.options.offscreen
-            && self.screen == Screen::Playing
-        {
-            self.note_input(
-                input_trace::InputOrigin::User,
-                input_trace::TraceKind::Motion { x, y },
-            );
-            self.mouse.on_move(0.0, 0.0, x, y, true, true);
-            self.last_input = Instant::now();
         }
     }
     /// A look from any device, in `Entity.turn` units: the tutorial's "look
@@ -475,6 +449,10 @@ fn top_screen_pauses(dialog: Option<bool>, book: Option<bool>, screen: bool, win
 
 #[cfg(test)]
 mod tests {
+    #[path = "../pointer_capture/tests/starling.rs"]
+    mod starling;
+    #[allow(unused_imports)]
+    use self::starling::*;
     use super::{regrab_after_run, studio_suppresses_focus_pause, top_screen_pauses};
 
     #[test]
@@ -553,17 +531,5 @@ mod tests {
         assert!(top_screen_pauses(None, Some(true), false, false));
         // A dialog opens over the book.
         assert!(!top_screen_pauses(Some(false), Some(true), false, false));
-    }
-
-    /// Android's pointer capture has no grab mode: a captured mouse stays as it is, frame after
-    /// frame (#467, #499). A computer's window whose grab went is grabbed again, outside a run.
-    #[test]
-    fn a_captured_android_mouse_is_not_grabbed_again_every_frame() {
-        assert!(!regrab_after_run(true, false, true, false));
-        assert!(!regrab_after_run(true, false, false, false));
-        assert!(regrab_after_run(false, false, true, false));
-        assert!(regrab_after_run(false, false, false, true));
-        assert!(!regrab_after_run(false, false, true, true));
-        assert!(!regrab_after_run(false, true, true, false));
     }
 }

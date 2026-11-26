@@ -1,4 +1,8 @@
 use super::*;
+#[path = "draw/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 impl Title {
     pub fn draw(
@@ -10,27 +14,6 @@ impl Title {
         phases: &mut dyn FnMut(crate::screen_draw::RenderPhase, &mut HudBatch),
     ) {
         self.draw_with_items(atlas, None, batch, cursor, hide_splash, false, phases);
-    }
-    /// `draw_with_items` without the render phases' callback, as the mods made for Sunrise's API call it
-    /// (Starling).
-    pub fn draw_with_items_old(
-        &self,
-        atlas: &HudAtlas,
-        items: Option<&crate::item_render::ItemRenderer>,
-        batch: &mut HudBatch,
-        cursor: (f32, f32),
-        hide_splash: bool,
-        hide_server_address: bool,
-    ) {
-        self.draw_with_items(
-            atlas,
-            items,
-            batch,
-            cursor,
-            hide_splash,
-            hide_server_address,
-            &mut |_, _| {},
-        );
     }
     /// [`Title::draw`] with the item models, which draw the item icons of the
     /// Superflat screens the way `GuiGraphics.renderItem` does.

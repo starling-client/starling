@@ -15,6 +15,10 @@ use crate::{
 
 /// HeaderAndFooterLayout(12 + 9 + 15, 33): the title over the search box.
 const HEADER: f32 = 36.0;
+#[path = "game_rules_screen/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 const FOOTER: f32 = 33.0;
 /// RuleList: 24 pixel entries in AbstractSelectionList's 220 pixel rows.
 const ROW: f32 = 24.0;
@@ -368,18 +372,6 @@ impl RulesScreen {
     }
     pub fn typing(&self) -> bool {
         !self.confirm && (self.search.focused || self.numbers.iter().any(|(_, b)| b.focused))
-    }
-    /// The box that takes the keys, for the on-screen keyboard's editor on Android: 0 the
-    /// search, then the rules' number boxes in their order. `edit` sets it.
-    pub fn typed_box(&self) -> Option<(usize, &EditBox)> {
-        if self.confirm {
-            return None;
-        }
-        if self.search.focused {
-            return Some((0, &self.search));
-        }
-        let i = self.numbers.iter().position(|(_, b)| b.focused)?;
-        Some((i + 1, &self.numbers[i].1))
     }
 
     /// A left click: the exit, if any, and whether the screen took the press.

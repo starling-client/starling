@@ -2,6 +2,10 @@
 //! `UiResources` and `PackResources`.
 use super::{api_values::TryIntoApi, *};
 use std::path::Path;
+#[path = "resource_tables/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 pub(super) fn load_animate_tables(
     root: &Path,
@@ -26,10 +30,6 @@ impl Resources {
         self.rest
             .get()
             .expect("world resources joined before entry")
-    }
-    /// Whether the world's resources (items, mobs...) have loaded: menus show before they do.
-    pub(super) fn rest_ready(&self) -> bool {
-        self.rest.get().is_some()
     }
     pub(super) fn facts(&self) -> &BlockFacts {
         &self.core.facts

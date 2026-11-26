@@ -2,6 +2,10 @@
 //! and bottom and its content height, made once per size and revision
 //! (`OptionsUi::layout`) and read by the drawing, the hit tests and the scroll.
 use super::*;
+#[path = "layout/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// A page's built layout: its widgets, the list's top and bottom and its
 /// content height. `OptionsUi` makes it once per size and revision; every
@@ -21,22 +25,6 @@ impl OptionsLayout {
     }
 }
 impl OptionsUi {
-    /// The preview and the options list share the available width.
-    pub(super) fn wardrobe_columns(&self, width: f32) -> Option<(f32, f32, f32)> {
-        if self.page() != Page::Skin || !self.wardrobe_enabled {
-            return None;
-        }
-        let total = (width - 26.0).min(480.0);
-        let preview = (total * 0.33).floor();
-        Some(((width - total) / 2.0, preview, total - preview - 12.0))
-    }
-
-    pub fn wardrobe_preview_rect(&self, width: f32, height: f32) -> Option<[f32; 4]> {
-        let (left, preview, _) = self.wardrobe_columns(width)?;
-        let bottom = height - 59.0;
-        (bottom > 33.0).then_some([left, 33.0, left + preview, bottom])
-    }
-
     /// Something the page layout reads changed: make it again at the next
     /// read, once.
     pub(super) fn relayout(&mut self) {
@@ -54,15 +42,6 @@ impl OptionsUi {
         if self.agent_status != status || self.agent_recording != recording {
             self.agent_status = status;
             self.agent_recording = recording;
-            self.relayout();
-        }
-    }
-    /// The calibration page's lines and buttons, from the game while it shows: the page lays out
-    /// again only when one of them changed, so a tap lands on the buttons it shows.
-    pub fn set_calibrate(&mut self, notes: Vec<String>, buttons: Vec<String>) {
-        if self.calibrate_notes != notes || self.calibrate != buttons {
-            self.calibrate_notes = notes;
-            self.calibrate = buttons;
             self.relayout();
         }
     }

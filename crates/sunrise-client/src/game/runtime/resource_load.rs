@@ -6,6 +6,10 @@ use super::*;
 #[cfg(test)]
 #[path = "incoming_tests/resource_load_scope.rs"]
 mod scope_tests;
+#[path = "resource_load/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 #[cfg(test)]
 #[path = "resource_load/facts_memo.rs"]
@@ -46,18 +50,6 @@ impl Progress {
     }
     pub(super) fn set(&self, stage: u32) {
         self.value.store(stage, Ordering::Relaxed);
-    }
-    pub(super) fn note(&self, line: Option<String>) {
-        *self
-            .note
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = line;
-    }
-    pub(super) fn noted(&self) -> Option<String> {
-        self.note
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
     }
     pub(super) fn fraction(&self) -> f32 {
         self.value.load(Ordering::Relaxed) as f32 / (self.lines.len() - 1) as f32

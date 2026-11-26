@@ -1,6 +1,10 @@
 //! Keys and mouse buttons over an open container screen: hotbar and pick keys, modifier keys,
 //! drags, throws and the press/release of a slot click.
 use super::*;
+#[path = "inventory_input/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// Q throws the whole stack with Control down: the same modifier word the
 /// screens read (`has_control_down`), never a latched sprint toggle.
@@ -337,10 +341,6 @@ impl Game<'_> {
         }
         self.modifiers.control_key()
     }
-    /// Starling: `Screen.hasAltDown`, beside the two above, which native mods made for Sunrise call.
-    pub(crate) fn has_alt_down(&self) -> bool {
-        self.modifiers.alt_key()
-    }
 
     /// Real events word the modifiers by their own `ModifiersChanged`; a
     /// control socket's `key` is synthesized, so it words the bit directly
@@ -406,11 +406,6 @@ impl Game<'_> {
             width: width as i32,
             height: height as i32,
         }
-    }
-    /// The open screen's window (`leftPos`, `topPos`, `imageWidth`, `imageHeight`): the touch
-    /// slots' and the mods' name for `container_image`.
-    pub(super) fn window_image(&self, batch: &HudBatch) -> sunrise_client::container_screen::Image {
-        self.container_image(batch)
     }
     /// A click outside the window (slot id -999): `THROW` does nothing; a
     /// `PICKUP` drops the carried stack (left) or one of it (right), thrown

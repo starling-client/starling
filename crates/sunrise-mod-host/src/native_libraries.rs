@@ -2,6 +2,10 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{ffi::CStr, path::Path};
+#[path = "native_libraries/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// Commit used for the pinned SDK ABI; `dev` for a build that names none.
 pub const GAME_BUILD_ID: &str = env!("SUNRISE_GAME_BUILD_ID");
@@ -251,13 +255,6 @@ pub fn load(folder: &Path) -> Result<Vec<&'static mod_api::__private::native::Na
         .collect()
 }
 
-/// What a start registers from one folder's native mod libraries: their hook entries and the build
-/// records of the mods they hold.
-pub struct Opened {
-    pub entries: Vec<mod_api::ModEntry>,
-    pub built: &'static [mod_api::__private::native::BuiltMod],
-}
-
 /// The libraries `folder`'s `native-mods.json` lists (none without one), checked, opened and
 /// installed. Every patch copy is installed and checked before any mod's hook factory runs, as the
 /// generated `main` did: a factory may call a patched function, and a refused install stops the
@@ -281,18 +278,6 @@ pub fn open(folder: &Path) -> Result<Opened, String> {
         entries,
         built: Box::leak(built.into_boxed_slice()),
     })
-}
-
-/// The packages of the mods `built` names, read where [`main_with`](crate::main_with) reads them
-/// beside an executable: `folder`'s `sunrise-native-mods/<id>/`. For a start that has no
-/// executable beside its libraries (Starling's Android start).
-pub fn packages_beside(
-    folder: &Path,
-    built: &'static [mod_api::__private::native::BuiltMod],
-) -> Result<sunrise_mod_package::runtime::Runtime, String> {
-    // `Runtime::load` reads the folder named `sunrise-native-mods` beside the file it is given.
-    sunrise_mod_package::runtime::Runtime::load(&folder.join("game"), built)
-        .map_err(|error| error.to_string())
 }
 
 /// Start the fixed executable, registering checked native libraries before the engine seal.

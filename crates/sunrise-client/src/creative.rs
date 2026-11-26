@@ -357,41 +357,10 @@ impl Creative {
     /// How far a tab row reaches outside the window, above or below it.
     pub const TAB_ROW_DEPTH: f32 = 28.0;
     pub const TRASH_POSITION: (f32, f32) = (173.0, 112.0);
-    /// How far past an item tab's grid of items a stack put down still goes back to the tab.
-    pub const GRID_MARGIN: f32 = 4.0;
-
-    /// Whether `mouse`, relative to the screen origin, is on an item tab's grid of `rows` rows of
-    /// items or within [`Creative::GRID_MARGIN`] of it. The display slots' hover boxes leave no
-    /// gap between them (`isHovering` grows each by a pixel); the margin is Starling's.
-    pub fn on_item_grid(mouse: (f32, f32), rows: usize) -> bool {
-        let m = Self::GRID_MARGIN;
-        let (left, top) = (8.0 - m, 17.0 - m);
-        let (right, bottom) = (8.0 + 9.0 * 18.0 + m, 17.0 + rows as f32 * 18.0 + m);
-        mouse.0 >= left && mouse.0 < right && mouse.1 >= top && mouse.1 < bottom
-    }
-
-    /// Whether `mouse`, relative to the screen origin, is within `reach` of the middle of the
-    /// Survival Inventory tab's Destroy Item slot, as a finger means a slot a little past it.
-    pub fn near_trash(mouse: (f32, f32), reach: f32) -> bool {
-        let (x, y) = Self::TRASH_POSITION;
-        (mouse.0 - x - 8.0).abs() <= reach && (mouse.1 - y - 8.0).abs() <= reach
-    }
 
     /// Visible player slots in the creative inventory tab (game slot ids).
     pub fn inventory_slots() -> impl Iterator<Item = usize> {
         (0..36).chain(500..505)
-    }
-
-    /// Bedrock Inventory: the crafting grid and its result in the room at the player's right.
-    pub fn bedrock_craft_position(slot: usize) -> Option<(f32, f32)> {
-        match slot {
-            100 => Some((129.0, 5.0)),
-            101 => Some((147.0, 5.0)),
-            102 => Some((129.0, 23.0)),
-            103 => Some((147.0, 23.0)),
-            200 => Some((173.0, 14.0)),
-            _ => None,
-        }
     }
 
     /// CreativeModeInventoryScreen.selectTab positions its InventoryMenu wrappers.
@@ -420,11 +389,6 @@ impl Creative {
     /// Visible slots of an item tab (game slot ids).
     pub fn tab_slots() -> impl Iterator<Item = usize> {
         (Self::DISPLAY..Self::DISPLAY + 45).chain(0..9)
-    }
-
-    /// Bedrock Inventory's item window: six rows of items, the last right under the fifth.
-    pub fn six_row_slots() -> impl Iterator<Item = usize> {
-        Self::DISPLAY..Self::DISPLAY + 54
     }
 
     /// ItemPickerMenu's slot positions (a sixth row of items goes on after the fifth).
@@ -788,13 +752,6 @@ impl Creative {
             .iter()
             .position(|tab| tab.id == self.selected_id)
             .unwrap_or(0)
-    }
-    /// Starling: the tab the screen works with, without `select`'s search box and scroll: Bedrock
-    /// Inventory shows two tabs' windows and goes from one to the other inside a frame.
-    pub fn show(&mut self, tab: usize) {
-        if let Some(t) = self.tabs.get(tab) {
-            self.selected_id.clone_from(&t.id);
-        }
     }
     /// The search tab's index (`CreativeModeTabs.searchTab`), the tab the chat
     /// key opens while another one is shown.
@@ -1222,6 +1179,10 @@ fn same_components(a: &ItemStack, b: &ItemStack) -> bool {
 }
 /// `CreativeModeInventoryScreen.getTooltipFromContainerItem`: the plain
 /// tooltip only for a category tab's own grid slots (`CustomCreativeSlot`);
+#[path = "creative/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 /// everywhere else in the screen the tab names (and, on the search tab's
 /// grid, the tag lines) follow the item's name.
 pub fn tooltip_lists_tabs(category_tab: bool, grid_slot: bool) -> bool {
@@ -1363,6 +1324,10 @@ pub fn click_display(
 
 #[cfg(test)]
 mod tests {
+    #[path = "starling.rs"]
+    mod starling;
+    #[allow(unused_imports)]
+    use self::starling::*;
     use super::*;
     use sunrise_core::nbt::Tag;
     use sunrise_items::creative_catalog::Parameters;
@@ -1983,41 +1948,6 @@ mod tests {
             {"id": "minecraft:inventory", "type": "INVENTORY", "row": "BOTTOM", "column": 6, "title": "Survival Inventory",
              "icon": "{count:1,id:\"minecraft:chest\"}", "build":[]}
         ]))
-    }
-
-    #[test]
-    fn six_rows_of_items_have_no_gap() {
-        for (slot, expected) in [(0, (9.0, 18.0)), (44, (153.0, 90.0)), (45, (9.0, 108.0))] {
-            assert_eq!(
-                Creative::tab_slot_position(Creative::DISPLAY + slot),
-                Some(expected)
-            );
-        }
-    }
-
-    #[test]
-    fn the_item_grid_takes_its_cells_the_pixels_between_them_and_a_margin() {
-        // A cell's middle, the pixels between two items, and the grid's corners past the cells.
-        for mouse in [(17.0, 26.0), (25.5, 35.5), (4.0, 13.0), (173.9, 110.9)] {
-            assert!(Creative::on_item_grid(mouse, 5), "{mouse:?}");
-        }
-        // Past the margin, the scrollbar, and the hotbar under five rows.
-        for mouse in [(3.9, 26.0), (17.0, 12.9), (175.0, 40.0), (17.0, 112.0)] {
-            assert!(!Creative::on_item_grid(mouse, 5), "{mouse:?}");
-        }
-        // Bedrock Inventory's sixth row, which has no hotbar under it.
-        assert!(Creative::on_item_grid((17.0, 116.0), 6));
-        assert!(!Creative::on_item_grid((17.0, 129.0), 6));
-    }
-
-    #[test]
-    fn a_finger_means_the_destroy_item_slot_a_little_past_it() {
-        // Its middle, and 11 pixels off it (half a cell and 2 beyond).
-        assert!(Creative::near_trash((181.0, 120.0), 11.0));
-        assert!(Creative::near_trash((170.0, 131.0), 11.0));
-        // The last hotbar slot's middle, beside it.
-        assert!(!Creative::near_trash((161.0, 120.0), 11.0));
-        assert!(!Creative::near_trash((181.0, 132.0), 11.0));
     }
 
     #[test]

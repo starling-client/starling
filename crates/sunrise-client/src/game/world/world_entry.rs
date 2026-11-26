@@ -2,6 +2,10 @@
 //! resources' background load, and the world's own content tables.
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[path = "world_entry/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 static BIOME_KEYS_SESSION: AtomicU64 = AtomicU64::new(1);
 
@@ -178,18 +182,6 @@ impl Game<'_> {
                 }
             }
         }
-    }
-
-    /// Waits until the world resources the title's start loads on a worker (`rest_loader`) are
-    /// in: the items, mobs and recipes `Resources::rest` holds.
-    pub(super) fn wait_world_rest(&mut self) -> Result<()> {
-        while self.rest_loader.is_some() {
-            self.poll_world_rest()?;
-            if self.rest_loader.is_some() {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-        }
-        Ok(())
     }
 
     pub(super) fn poll_world_rest(&mut self) -> Result<()> {

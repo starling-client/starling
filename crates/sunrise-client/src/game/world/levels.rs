@@ -45,6 +45,10 @@ use sunrise_client::{
     world::World,
 };
 use sunrise_world::level::{LevelEvent, Ticks};
+#[path = "levels/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 const BUILTIN_LEVEL_ORDER: [Dim; 3] = [Dim::Overworld, Dim::Nether, Dim::End];
 
@@ -3395,12 +3399,5 @@ impl Game<'_> {
         self.update_totem_ready();
         span("tick_command_extras", || self.tick_command_extras());
         self.tick_world(running)
-    }
-}
-
-impl Levels {
-    /// Starling: the save folders of the levels not in place, to wait for their writes.
-    pub(super) fn parked_saves(&self) -> Vec<std::sync::Arc<sunrise_client::save::SaveDir>> {
-        self.parked.values().map(|p| p.save.clone()).collect()
     }
 }

@@ -7,6 +7,10 @@ use std::{fs, path::Path};
 use sunrise_protocol::packets::configuration::ClientInformation;
 
 pub use sunrise_client_core::sound_source::SOUND_SOURCES;
+#[path = "settings/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// Per-source volumes for the mixer (soundCategory_* except master).
 static SOURCE_VOLUMES: std::sync::RwLock<[f32; 11]> = std::sync::RwLock::new([1.0; 11]);
@@ -97,50 +101,6 @@ pub fn source_volume(i: usize) -> f32 {
         1.0
     } else {
         SOURCE_VOLUMES.read().unwrap_or_else(|e| e.into_inner())[i]
-    }
-}
-
-/// What a button of the player's own on the touch controls does.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CustomAction {
-    /// Holds one of the game's controls (`key.sprint`) while a finger is on it.
-    Key(String),
-    /// Holds a key of the keyboard (`key.keyboard.f1`) while a finger is on it.
-    Input(String),
-    /// Sends a command or a chat line when pressed.
-    Send(String),
-}
-
-/// A button of the player's own on the touch controls (its place is the layout's).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CustomButton {
-    pub id: u32,
-    pub action: CustomAction,
-    /// One of [`CUSTOM_ICONS`]; none shows what it does in words.
-    pub icon: Option<String>,
-    /// Wears the player's own image instead (`own_buttons`).
-    pub image: bool,
-    /// Wears another image of the player's own while pressed (`own_buttons::pressed_slot`).
-    pub pressed: bool,
-    /// A press turns it on and the next one off; otherwise it is on while held.
-    pub toggle: bool,
-}
-
-/// What a custom button can wear: `starling:touch/custom_<name>` and its `_pressed`
-/// (packaging/touch/make.py draws them).
-pub const CUSTOM_ICONS: [&str; 15] = [
-    "star", "heart", "shield", "skull", "home", "crown", "flag", "plus", "check", "cross",
-    "potion", "pickaxe", "apple", "fire", "music",
-];
-
-impl CustomButton {
-    /// What it shows on it.
-    pub fn label(&self) -> String {
-        match &self.action {
-            CustomAction::Key(name) => crate::lang::get(name),
-            CustomAction::Input(name) => crate::keybinds::display_name(name).plain(),
-            CustomAction::Send(line) => line.clone(),
-        }
     }
 }
 

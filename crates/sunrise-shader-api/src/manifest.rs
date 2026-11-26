@@ -1,5 +1,9 @@
 //! `sunrise-shaders.toml`, a shader pack's manifest (schema 1, docs/shaders.md).
 use serde::Deserialize;
+#[path = "manifest/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// The manifest's file name at the root of a pack.
 pub const MANIFEST: &str = "sunrise-shaders.toml";
@@ -277,18 +281,6 @@ pub struct Reflection {
     #[serde(default)]
     pub option: Option<String>,
 }
-
-/// `[ray_tracing]`: the pack uses hardware ray queries (`rt_trace`, `rt_occluded`
-/// in the material and post stages) against the world's BLAS/TLAS. Without a
-/// ray-query device the pack is refused with its name in the log.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct RayTracing {}
-
-/// `[ray_tracing]`, unchecked.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawRayTracing {}
 
 /// `[[textures]]`: a PNG of the pack every stage reads, as `<id>` and `<id>_sampler`.
 #[derive(Clone, Debug, PartialEq)]
