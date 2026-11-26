@@ -9,6 +9,10 @@ pub trait StarlingModKeys {
     fn mod_key(&self, owner: &str, id: &str) -> Option<(String, ClientModifiers)>;
     fn consume_click(&mut self, owner: &str, id: &str) -> bool;
     fn is_mod_key_down(&self, owner: &str, id: &str) -> bool;
+    /// Horizon's `ClientHost::is_down(mod_id, id)`.
+    fn is_down(&self, owner: &str, id: &str) -> bool {
+        self.is_mod_key_down(owner, id)
+    }
 }
 
 impl StarlingModKeys for dyn ClientHost + '_ {

@@ -18,10 +18,14 @@ from pathlib import Path
 
 
 def _types(message: str) -> tuple[str, str] | None:
-    m = re.search(r"expected `([^`]+)`, found `([^`]+)`", message)
+    """(expected, found) from a label (`expected `A`, found `B``) or a note (`expected tuple `a::A`` / `found
+    struct `b::B``), with paths dropped (`std::string::String` is `String`)."""
+    m = re.search(r"expected (?:[\w ]+? )?`([^`]+)`,?\s*found (?:[\w ]+? )?`([^`]+)`", message)
     if not m:
-        m = re.search(r"expected `([^`]+)`\s*found `([^`]+)`", message)
-    return (m.group(1), m.group(2)) if m else None
+        return None
+    def bare(t):
+        return re.sub(r"\b(?:[a-z_][a-z0-9_]*::)+(?=[A-Za-z_])", "", t)
+    return bare(m.group(1)), bare(m.group(2))
 
 
 def _strip_ref(text: str) -> str:
@@ -186,7 +190,7 @@ def fixes(diagnostics: list[dict], folder: Path, root: Path) -> list[tuple[Path,
         if code == "E0308":
             pair = _types(diag["message"]) or next(
                 (_types(c["message"]) for c in diag.get("children", []) if _types(c["message"])), None)
-            label = span.get("label") or ""
+            label = span.get("label") or next((s.get("label") or "" for s in diag["spans"] if s.get("is_primary")), "")
             pair = pair or _types(label)
             rule = TYPE_RULES.get(pair) if pair else None
             if not rule and pair:
