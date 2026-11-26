@@ -97,6 +97,17 @@ impl Game<'_> {
 
     /// Existing local frame counters; None outside a logged-in client world.
     /// This read collects no history and sends nothing anywhere.
+    /// The local player's fishing hook: its position and whether a fish is biting. None
+    /// when no hook is out or outside a logged-in client world.
+    pub(super) fn native_client_fishing_hook(&self) -> Option<mod_api::ClientFishingHook> {
+        self.native_session()?;
+        let (position, biting) = self.local_fishing_hook()?;
+        Some(mod_api::ClientFishingHook::new(
+            mod_api::Vec3::new(position.x, position.y, position.z),
+            biting,
+        ))
+    }
+
     pub(super) fn native_client_frame_stats(&self) -> Option<ClientFrameStats> {
         self.native_session()?;
         Some(ClientFrameStats {
@@ -388,6 +399,86 @@ pub(super) mod tests {
             assert_eq!(current.ambient_mood(game), None);
             game.remote = None;
             assert_eq!(current.block_breaking(game), None);
+        });
+    }
+
+    /// The fishing hook a client reads is the local player's own, and its bite follows
+    /// what the server sent.
+    #[test]
+    #[ignore = "daily"]
+    fn fishing_hook_read_follows_the_local_players_bobber() {
+        use horizon_protocol::{
+            entity_data::{Value, serializer},
+            packets::play::{self, Clientbound as C},
+        };
+
+        with_client_game(|game| {
+            assert_eq!(game.client_session().client_fishing_hook(), None);
+            let _server = logged_client(game);
+            // No hook out yet.
+            assert_eq!(game.client_session().client_fishing_hook(), None);
+
+            let kind = game
+                .remote
+                .as_ref()
+                .unwrap()
+                .builtin
+                .get("minecraft:entity_type")
+                .and_then(|ids| ids.id("minecraft:fishing_bobber"))
+                .expect("the builtin registries list the fishing bobber");
+            // The server's add packet for the local player's bobber: the owner's id
+            // is the data, and the local player's entity id is 7 here.
+            game.handle_packet(C::AddEntity(play::AddEntity {
+                id: 11,
+                uuid: 1,
+                kind,
+                position: [4.0, 5.0, 6.0],
+                velocity: [0.0, 0.0, 0.0],
+                pitch: 0,
+                yaw: 0,
+                head_yaw: 0,
+                data: 7,
+            }))
+            .unwrap();
+            let hook = game.client_session().client_fishing_hook().unwrap();
+            assert_eq!(hook.position, mod_api::Vec3::new(4.0, 5.0, 6.0));
+            assert!(!hook.biting, "no bite yet");
+
+            // DATA_BITING from the server.
+            game.handle_packet(C::SetEntityData(play::SetEntityData {
+                id: 11,
+                values: vec![(9, serializer::BOOLEAN, Value::Bool(true))],
+            }))
+            .unwrap();
+            assert!(
+                game.client_session().client_fishing_hook().unwrap().biting,
+                "the server's bite shows"
+            );
+            game.handle_packet(C::SetEntityData(play::SetEntityData {
+                id: 11,
+                values: vec![(9, serializer::BOOLEAN, Value::Bool(false))],
+            }))
+            .unwrap();
+            assert!(
+                !game.client_session().client_fishing_hook().unwrap().biting,
+                "the bite ends"
+            );
+
+            // Another player's bobber does not move the read.
+            game.handle_packet(C::AddEntity(play::AddEntity {
+                id: 12,
+                uuid: 2,
+                kind,
+                position: [40.0, 50.0, 60.0],
+                velocity: [0.0, 0.0, 0.0],
+                pitch: 0,
+                yaw: 0,
+                head_yaw: 0,
+                data: 8,
+            }))
+            .unwrap();
+            let hook = game.client_session().client_fishing_hook().unwrap();
+            assert_eq!(hook.position, mod_api::Vec3::new(4.0, 5.0, 6.0));
         });
     }
 }

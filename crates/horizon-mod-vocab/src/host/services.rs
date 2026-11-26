@@ -85,6 +85,17 @@ pub trait ClientSession {
         )
     }
     /// Side: client.
+    /// The local player's fishing hook: its position and whether a fish is biting. What
+    /// this client tracks; None outside a logged-in client world or when no hook is out.
+    /// Sends nothing.
+    fn client_fishing_hook(&self) -> Option<ClientFishingHook> {
+        crate::world::phase::unprovided(
+            "ClientSession::client_fishing_hook",
+            "client_fishing_hook",
+            crate::world::phase::LoadAccess::ClientSetup,
+        )
+    }
+    /// Side: client.
     /// Existing local frame counters; None outside a logged-in client world.
     /// This read collects no history and sends nothing anywhere.
     fn client_frame_stats(&self) -> Option<ClientFrameStats> {

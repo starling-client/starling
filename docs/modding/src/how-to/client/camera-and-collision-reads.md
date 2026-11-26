@@ -114,6 +114,10 @@ These read the local player as the client sees it. They take no mod-controlled n
   (`isUsingItem`, `getUsedItemHand`, `getTicksUsingItem`, `getUseItemRemainingTicks`).
   `ticks_used + ticks_remaining` is the use duration. It is `None` when no item is in use or no world
   is open.
+- `ClientHost::client_session().client_fishing_hook()` is the local player's fishing hook:
+  `ClientFishingHook { position, biting }`. `position` is the bobber's position as the client
+  tracks it; `biting` is true while a fish is biting. It is `None` outside a world or when
+  no hook is out.
 - `ClientHost::hover_name(&stack)` is `ItemStack.getHoverName()` as plain text: the custom name, else
   a written book's non-blank title, else the item's name in the client's language, without rarity
   colour or italics. An invalid stack reads an empty string.

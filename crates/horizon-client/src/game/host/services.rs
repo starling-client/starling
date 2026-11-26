@@ -24,6 +24,13 @@ impl ClientSession for Game<'_> {
         );
         self.native_client_latency()
     }
+    fn client_fishing_hook(&self) -> Option<ClientFishingHook> {
+        mod_api::__private::check_access(
+            "client_fishing_hook",
+            mod_api::__private::LoadAccess::ClientSetup,
+        );
+        self.native_client_fishing_hook()
+    }
     fn client_frame_stats(&self) -> Option<ClientFrameStats> {
         mod_api::__private::check_access(
             "client_frame_stats",

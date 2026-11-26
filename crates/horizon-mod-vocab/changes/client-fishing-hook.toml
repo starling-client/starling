@@ -1,0 +1,3 @@
+ids = ["method:ClientSession::client_fishing_hook", "type:ClientFishingHook"]
+why = "Adds a client read of the local player's fishing hook: its position and whether a fish is biting, so a mod need not guess the bite from the splash sound."
+migrate = "Additive. Read it on the client; it is None outside a logged-in client world and when no hook is out."
