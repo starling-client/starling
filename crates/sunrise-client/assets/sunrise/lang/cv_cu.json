@@ -57,7 +57,7 @@
   "Chunk loading": "Чунк загрузки",
   "Chunk loading, culling and power use.": "Татӑксене тиесе ҫӗмӗресси, ҫӗмӗресси тата энергипе усӑ курасси.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Пӗлӗт сийӗ: сӳннӗ, лаптак (хӑвӑрт) е 3D (чаплӑ).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Вырӑнти тӗнчери инҫетри ҫӗр лаптӑкӗ. Пӗрлештернӗ GPU-сем 128 татӑк ҫинче чарӑнаҫҫӗ.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Вырӑнти тӗнчери инҫетри ҫӗр лаптӑкӗ. Пӗрлештернӗ GPU-сем 128 татӑк ҫинче чарӑнаҫҫӗ.",
   "Controller": "Контроллер",
   "Copper Golem Statues": "Пӑхӑр голем статуйисем",
   "Culling": "Кульлинг",

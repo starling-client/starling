@@ -57,7 +57,7 @@
   "Chunk loading": "청크 로딩",
   "Chunk loading, culling and power use.": "청크 로딩, 컬링 및 전력 사용량 설정입니다.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "구름 레이어: 끔, 평면(빠름) 또는 3D(화려함).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "로컬 월드의 거친 원거리 지형. 내장 GPU는 128청크에서 제한됩니다.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "로컬 월드의 거친 원거리 지형. 내장 GPU는 128청크에서 제한됩니다.",
   "Controller": "컨트롤러",
   "Copper Golem Statues": "구리 골렘 석상",
   "Culling": "컬링",

@@ -57,7 +57,7 @@
   "Chunk loading": "Stéck Luede",
   "Chunk loading, culling and power use.": "Chunk Lueden, culling a Kraaftverbrauch.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Cloud Schicht: Off, flaach (séier) oder 3D (Fancy).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Grof wäitem Terrain an lokal Welten. Integréiert GPUs stoppen op 128 Stécker.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Grof wäitem Terrain an lokal Welten. Integréiert GPUs stoppen op 128 Stécker.",
   "Controller": "Controller",
   "Copper Golem Statues": "Kupfer Golem Statuen",
   "Culling": "Culling",

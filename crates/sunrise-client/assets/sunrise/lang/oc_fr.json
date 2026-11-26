@@ -57,7 +57,7 @@
   "Chunk loading": "Cargament de tròces",
   "Chunk loading, culling and power use.": "Cargament de tròces, desrevelhament e utilizacion de l'energia.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Calc de nívol: desactivat, plan (rapid) o 3D (fantasiós).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Terrenh grossièr luènh dins de monds locals. Los GPU integrats s'arrèstan a 128 tròces.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Terrenh grossièr luènh dins de monds locals. Los GPU integrats s'arrèstan a 128 tròces.",
   "Controller": "Contrarotlador",
   "Copper Golem Statues": "Estatuas de golem de coire",
   "Culling": "Destruccion",

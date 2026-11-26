@@ -57,7 +57,7 @@
   "Chunk loading": "Parça yükləmə",
   "Chunk loading, culling and power use.": "Parçaların yüklənməsi, kəsilməsi və enerji istifadəsi.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Bulud təbəqəsi: sönük, düz (sürətli) və ya 3D (fantastik).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Yerli dünyalarda kobud uzaq ərazi. İnteqrasiya edilmiş GPU-lar 128 hissədə dayanır.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Yerli dünyalarda kobud uzaq ərazi. İnteqrasiya edilmiş GPU-lar 128 hissədə dayanır.",
   "Controller": "Nəzarətçi",
   "Copper Golem Statues": "Mis Qolem heykəlləri",
   "Culling": "Kəsmə",

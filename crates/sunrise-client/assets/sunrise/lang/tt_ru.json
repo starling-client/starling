@@ -57,7 +57,7 @@
   "Chunk loading": "Чакыру",
   "Chunk loading, culling and power use.": "Чакыру йөкләү, тарту һәм көч куллану.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Болыт катламы: сүндерелгән, яссы (тиз) яки 3D (матур).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Localирле дөньяларда ерак җир. Интеграль GPUлар 128 өлештә туктый.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Localирле дөньяларда ерак җир. Интеграль GPUлар 128 өлештә туктый.",
   "Controller": "Контроллер",
   "Copper Golem Statues": "Бакыр Голем сыннары",
   "Culling": "Каллинг",

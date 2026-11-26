@@ -57,7 +57,7 @@
   "Chunk loading": "Burburinta jajabka",
   "Chunk loading, culling and power use.": "Cunto-saarid, jiidis iyo isticmaalka korantada.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Lakabka daruuraha: off, flat (dhakhso) ama 3D (qurux badan).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Dhul aad u fog oo aan fiicneyn oo ka jira adduunka maxalliga ah. GPU-yada isku dhafan waxay joogsadaan 128 qaybood.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Dhul aad u fog oo aan fiicneyn oo ka jira adduunka maxalliga ah. GPU-yada isku dhafan waxay joogsadaan 128 qaybood.",
   "Controller": "Kontaroolaha",
   "Copper Golem Statues": "Taalooyinka Golem Copper",
   "Culling": "Culling",

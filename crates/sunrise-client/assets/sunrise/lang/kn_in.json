@@ -57,7 +57,7 @@
   "Chunk loading": "ಚಂಕ್ ಲೋಡ್ ಆಗುತ್ತಿದೆ",
   "Chunk loading, culling and power use.": "ಚಂಕ್ ಲೋಡಿಂಗ್, ಕಲ್ಲಿಂಗ್ ಮತ್ತು ಪವರ್ ಬಳಕೆ.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "ಮೇಘ ಪದರ: ಆಫ್, ಫ್ಲಾಟ್ (ವೇಗದ) ಅಥವಾ 3D (ಅಲಂಕಾರಿಕ).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "ಸ್ಥಳೀಯ ಪ್ರಪಂಚಗಳಲ್ಲಿ ಒರಟಾದ ದೂರದ ಭೂಪ್ರದೇಶ. ಇಂಟಿಗ್ರೇಟೆಡ್ ಜಿಪಿಯುಗಳು 128 ಭಾಗಗಳಲ್ಲಿ ನಿಲ್ಲುತ್ತವೆ.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "ಸ್ಥಳೀಯ ಪ್ರಪಂಚಗಳಲ್ಲಿ ಒರಟಾದ ದೂರದ ಭೂಪ್ರದೇಶ. ಇಂಟಿಗ್ರೇಟೆಡ್ ಜಿಪಿಯುಗಳು 128 ಭಾಗಗಳಲ್ಲಿ ನಿಲ್ಲುತ್ತವೆ.",
   "Controller": "ನಿಯಂತ್ರಕ",
   "Copper Golem Statues": "ತಾಮ್ರದ ಗೊಲೆಮ್ ಪ್ರತಿಮೆಗಳು",
   "Culling": "ಕೊಲ್ಲುವುದು",

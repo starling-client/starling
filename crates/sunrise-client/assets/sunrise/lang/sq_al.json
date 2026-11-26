@@ -57,7 +57,7 @@
   "Chunk loading": "Ngarkimi i copës",
   "Chunk loading, culling and power use.": "Ngarkimi i copëzave, heqja dhe përdorimi i energjisë.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Shtresa e resë: joaktive, e sheshtë (e shpejtë) ose 3D (e zbukuruar).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Terreni i trashë i largët në botët lokale. GPU-të e integruara ndalojnë në 128 copë.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Terreni i trashë i largët në botët lokale. GPU-të e integruara ndalojnë në 128 copë.",
   "Controller": "Kontrolluesi",
   "Copper Golem Statues": "Statujat e Golemit prej bakri",
   "Culling": "Shkatërrimi",

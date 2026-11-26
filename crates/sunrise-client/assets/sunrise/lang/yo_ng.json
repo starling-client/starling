@@ -57,7 +57,7 @@
   "Chunk loading": "chunk ikojọpọ",
   "Chunk loading, culling and power use.": "chunk ikojọpọ, culling ati agbara lilo.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Awọsanma Layer: pa, alapin (sare) tabi 3D (Fancy).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Ilẹ-ilẹ ti o jinna ni awọn aye agbegbe. Awọn GPU ti a ṣepọ duro ni 128 chunks.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Ilẹ-ilẹ ti o jinna ni awọn aye agbegbe. Awọn GPU ti a ṣepọ duro ni 128 chunks.",
   "Controller": "Adarí",
   "Copper Golem Statues": "Ejò Golem Statues",
   "Culling": "Ìdínà",

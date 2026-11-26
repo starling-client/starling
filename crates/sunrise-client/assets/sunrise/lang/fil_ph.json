@@ -57,7 +57,7 @@
   "Chunk loading": "Naglo-load ng tipak",
   "Chunk loading, culling and power use.": "Chunk loading, culling at paggamit ng kuryente.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Cloud layer: naka-off, flat (mabilis) o 3D (fancy).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Magaspang na malayong lupain sa mga lokal na mundo. Humihinto ang mga pinagsamang GPU sa 128 chunks.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Magaspang na malayong lupain sa mga lokal na mundo. Humihinto ang mga pinagsamang GPU sa 128 chunks.",
   "Controller": "Controller",
   "Copper Golem Statues": "Mga Estatwa ng Copper Golem",
   "Culling": "Pag-cull",

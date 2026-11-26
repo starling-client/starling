@@ -1,0 +1,9 @@
+{
+  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Grobes fernes Gelände in lokalen Welten. Integrierte GPUs: max. 128.",
+  "Ray Tracing": "Raytracing",
+  "Hardware ray tracing (ray queries) where the GPU offers it. Next start.": "Hardware-Raytracing (Ray-Queries), wo die GPU es anbietet. Nach Neustart.",
+  "Ray Tracing (Experimental)": "Raytracing (experimentell)",
+  "Experimental: hardware ray tracing for shader packs that use it. Next start.": "Experimentell: Hardware-Raytracing für Shader-Pakete, die es nutzen. Nach Neustart.",
+  "GPU Drivers...": "GPU-Treiber …",
+  "A custom Vulkan driver, like Turnip, instead of the system's. Next start.": "Ein eigener Vulkan-Treiber, etwa Turnip, statt dem des Systems. Nach Neustart."
+}

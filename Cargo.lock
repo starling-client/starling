@@ -4366,6 +4366,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "starling-platform"
+version = "0.1.0"
+dependencies = [
+ "sunrise-platform",
+]
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4393,6 +4400,7 @@ version = "0.1.0"
 dependencies = [
  "jni 0.21.1",
  "log",
+ "starling-platform",
  "sunrise-client",
  "sunrise-hooks",
  "sunrise-mod-api",

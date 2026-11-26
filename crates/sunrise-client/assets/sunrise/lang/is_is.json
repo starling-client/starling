@@ -57,7 +57,7 @@
   "Chunk loading": "Hleðsla á klumpur",
   "Chunk loading, culling and power use.": "Hleðsla, niðurskurð og orkunotkun.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Skýjalag: slökkt, flatt (hratt) eða 3D (fínt).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Gróft fjarlægt landslag í heimaheimum. Innbyggt GPU stoppar við 128 klumpur.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Gróft fjarlægt landslag í heimaheimum. Innbyggt GPU stoppar við 128 klumpur.",
   "Controller": "Stjórnandi",
   "Copper Golem Statues": "Golem styttur úr kopar",
   "Culling": "Úrskurður",

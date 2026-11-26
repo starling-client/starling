@@ -57,7 +57,7 @@
   "Chunk loading": "Načítanie kúskov",
   "Chunk loading, culling and power use.": "Nakladanie kúskov, utratenie a spotreba energie.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Cloudová vrstva: vypnutá, plochá (rýchla) alebo 3D (efektná).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Hrubý vzdialený terén v miestnych svetoch. Integrované GPU sa zastaví na 128 kúskoch.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Hrubý vzdialený terén v miestnych svetoch. Integrované GPU sa zastaví na 128 kúskoch.",
   "Controller": "Ovládač",
   "Copper Golem Statues": "Medené sochy Golema",
   "Culling": "Porážanie",

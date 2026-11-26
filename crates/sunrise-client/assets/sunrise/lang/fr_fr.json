@@ -57,7 +57,7 @@
   "Chunk loading": "Chargement des tronçons",
   "Chunk loading, culling and power use.": "Chargement des tronçons, occlusion et consommation d'énergie.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Couche de nuages : désactivée, plate (rapide) ou 3D (détaillée).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Terrain lointain simplifié, mondes locaux. GPU intégrés : 128 max.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Terrain lointain simplifié, mondes locaux. GPU intégrés : 128 max.",
   "Controller": "Manette",
   "Copper Golem Statues": "Statues de golem de cuivre",
   "Culling": "Occlusion",

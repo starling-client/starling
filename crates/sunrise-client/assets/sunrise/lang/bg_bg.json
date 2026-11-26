@@ -57,7 +57,7 @@
   "Chunk loading": "Зареждане на парчета",
   "Chunk loading, culling and power use.": "Зареждане на парчета, отстраняване и използване на енергия.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Облачен слой: изключен, плосък (бърз) или 3D (фантастичен).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Груб далечен терен в местните светове. Интегрираните графични процесори спират на 128 парчета.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Груб далечен терен в местните светове. Интегрираните графични процесори спират на 128 парчета.",
   "Controller": "Контролер",
   "Copper Golem Statues": "Медни статуи на голем",
   "Culling": "Бране",

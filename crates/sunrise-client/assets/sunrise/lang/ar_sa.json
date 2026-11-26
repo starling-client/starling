@@ -57,7 +57,7 @@
   "Chunk loading": "تحميل قطعة",
   "Chunk loading, culling and power use.": "تحميل القطع وإعدامها واستخدام الطاقة.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "طبقة السحابة: معطلة، مسطحة (سريعة) أو ثلاثية الأبعاد (فاخرة).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "التضاريس البعيدة الخشنة في العوالم المحلية. تتوقف وحدات معالجة الرسومات المدمجة عند 128 قطعة.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "التضاريس البعيدة الخشنة في العوالم المحلية. تتوقف وحدات معالجة الرسومات المدمجة عند 128 قطعة.",
   "Controller": "وحدة التحكم",
   "Copper Golem Statues": "تماثيل النحاس جوليم",
   "Culling": "إعدام",

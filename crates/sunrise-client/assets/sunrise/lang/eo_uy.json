@@ -57,7 +57,7 @@
   "Chunk loading": "Peceta ŝarĝo",
   "Chunk loading, culling and power use.": "Chunk-ŝarĝado, forigo kaj potenco-uzo.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Nuba tavolo: malŝaltita, plata (rapida) aŭ 3D (fantazia).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Kruda malproksima tereno en lokaj mondoj. Integritaj GPUoj ĉesas ĉe 128 pecoj.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Kruda malproksima tereno en lokaj mondoj. Integritaj GPUoj ĉesas ĉe 128 pecoj.",
   "Controller": "Regilo",
   "Copper Golem Statues": "Kupro-Golemaj Statuoj",
   "Culling": "Kaŝado",

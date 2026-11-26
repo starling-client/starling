@@ -57,7 +57,7 @@
   "Chunk loading": "Palojen lataus",
   "Chunk loading, culling and power use.": "Palalataus, teurastus ja tehonkäyttö.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Pilvikerros: pois päältä, tasainen (nopea) tai 3D (fancy).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Karkea etäinen maasto paikallisissa maailmoissa. Integroidut GPU:t pysähtyvät 128 palaan.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Karkea etäinen maasto paikallisissa maailmoissa. Integroidut GPU:t pysähtyvät 128 palaan.",
   "Controller": "Ohjain",
   "Copper Golem Statues": "Kupariset Golem-patsaat",
   "Culling": "Karsinta",

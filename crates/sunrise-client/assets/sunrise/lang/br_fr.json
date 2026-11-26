@@ -57,7 +57,7 @@
   "Chunk loading": "Kargañ tammoù",
   "Chunk loading, culling and power use.": "Kargañ troc'hadoù, distrujañ hag implij ar galloud.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Treuzfollenn ar c'hoad : diweredekaet, plaen (buan) pe 3D (fentus).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Douaroù pell gros e bedoù lec'hel. Paouez a ra ar GPUoù kevredet da 128 tamm.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Douaroù pell gros e bedoù lec'hel. Paouez a ra ar GPUoù kevredet da 128 tamm.",
   "Controller": "Kontroller",
   "Copper Golem Statues": "Delwennoù golem kouevr",
   "Culling": "Lazhañ",

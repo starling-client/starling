@@ -57,7 +57,7 @@
   "Chunk loading": "Chunk laai",
   "Chunk loading, culling and power use.": "Chunk laai, uitskot en kraggebruik.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Wolklaag: af, plat (vinnig) of 3D (fancy).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Growwe verre terrein in plaaslike wêrelde. Geïntegreerde GPU's stop by 128 stukke.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Growwe verre terrein in plaaslike wêrelde. Geïntegreerde GPU's stop by 128 stukke.",
   "Controller": "Beheerder",
   "Copper Golem Statues": "Koper Golem-standbeelde",
   "Culling": "Uitskot",

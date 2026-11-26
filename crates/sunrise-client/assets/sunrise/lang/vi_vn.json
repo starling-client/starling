@@ -57,7 +57,7 @@
   "Chunk loading": "Tải từng đoạn",
   "Chunk loading, culling and power use.": "Tải chunk, loại bỏ và sử dụng năng lượng.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Lớp đám mây: tắt, phẳng (nhanh) hoặc 3D (ưa thích).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Địa hình xa xôi trong thế giới địa phương. GPU tích hợp dừng ở 128 khối.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Địa hình xa xôi trong thế giới địa phương. GPU tích hợp dừng ở 128 khối.",
   "Controller": "Bộ điều khiển",
   "Copper Golem Statues": "Tượng Golem bằng đồng",
   "Culling": "Loại bỏ",

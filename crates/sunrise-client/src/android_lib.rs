@@ -42,7 +42,7 @@ fn install_platform() -> Result<(), String> {
 
 /// Sunrise's in-game parts Starling ships, registered before the game reads them, as the official
 /// desktop game does (sunrise-official's `register`): the performance overlay (Sunrise Settings,
-/// Extras, Performance Overlay) and auto-reconnect.
+/// Extras, Performance Overlay) and auto-reconnect. Then Starling's own (crates/starling-platform).
 fn register_parts() {
     use sunrise_hooks::{hud, lang, pages, settings};
     let results = [
@@ -54,7 +54,7 @@ fn register_parts() {
         pages::register(&sunrise_reconnect::SECTION),
         hud::register(&sunrise_perf_overlay::LAYER),
     ];
-    for result in results {
+    for result in results.into_iter().chain(starling_platform::register()) {
         if let Err(e) = result {
             log::warn!("Starling: an in-game part did not register: {e}");
         }

@@ -57,7 +57,7 @@
   "Chunk loading": "Tagħbija tal-biċċiet",
   "Chunk loading, culling and power use.": "Tagħbija tal-biċċiet, qtil u użu tal-enerġija.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Saff tas-sħab: mitfi, ċatt (veloċi) jew 3D (fancy).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Terren imbiegħed oħxon fid-dinjiet lokali. Il-GPUs integrati jieqfu f'128 biċċa.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Terren imbiegħed oħxon fid-dinjiet lokali. Il-GPUs integrati jieqfu f'128 biċċa.",
   "Controller": "Kontrollur",
   "Copper Golem Statues": "Statwi tal-Golem tar-Ram",
   "Culling": "Qatla",

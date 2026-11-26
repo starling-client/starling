@@ -34,6 +34,8 @@ sunrise-mod-package = { path = "../sunrise-mod-package" }
 sunrise-hooks = { path = "../sunrise-hooks" }
 sunrise-perf-overlay = { path = "../sunrise-perf-overlay" }
 sunrise-reconnect = { path = "../sunrise-reconnect" }
+# Starling's own parts (its text), registered as sunrise-official registers Sunrise's.
+starling-platform = { path = "../starling-platform" }
 log = "0.4"
 
 [features]

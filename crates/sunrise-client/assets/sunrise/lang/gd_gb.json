@@ -57,7 +57,7 @@
   "Chunk loading": "Cunnart a’ luchdachadh",
   "Chunk loading, culling and power use.": "Lùbadh chunk, marbhadh agus cleachdadh cumhachd.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Còmhdach sgòthan: dheth, còmhnard (luath) no 3D (sùbailte).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Cruth-tìre garbh fad às ann an saoghal ionadail. Bidh GPUs aonaichte a’ stad aig 128 pìosan.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Cruth-tìre garbh fad às ann an saoghal ionadail. Bidh GPUs aonaichte a’ stad aig 128 pìosan.",
   "Controller": "Rianadair",
   "Copper Golem Statues": "Ìomhaighean Copper Golem",
   "Culling": "Culadh",

@@ -2,6 +2,7 @@
 exclude = ["crates/sunrise-telemetry-server", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/android-activity", "third_party/winit", "tools/fixtures/paper-trace-mod"]
 members = [
     "crates/starling-catalog",
+    "crates/starling-platform",
     "crates/sunrise-mod-vocab",
     "crates/sunrise-game-discovery",
     "crates/sunrise-telemetry",

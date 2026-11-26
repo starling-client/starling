@@ -57,7 +57,7 @@
   "Chunk loading": "Caricament de pezz",
   "Chunk loading, culling and power use.": "Caricament de pezz, sciaccament e üs de podè.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Strat de nuvola: spent, piatt (veloce) o 3D (fantastico).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Terren luntan gross in di mund locai. I GPU integrà se ferman a 128 pezz.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Terren luntan gross in di mund locai. I GPU integrà se ferman a 128 pezz.",
   "Controller": "Cuntroladur",
   "Copper Golem Statues": "Statue del Golem de ram",
   "Culling": "Scazzament",

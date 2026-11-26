@@ -57,7 +57,7 @@
   "Chunk loading": "Bihtáid lassin",
   "Chunk loading, culling and power use.": "Bihtáid lassin, goddin ja elrávnnji geavaheapmi.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Čuovgalávki: eret, lihka (jođánit) dahje 3D (fámolaš).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Garra guhkkin eret muohta báikkálaš máilmmis. Integrerejuvvon GPU:at bissot 128 čuoggás.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Garra guhkkin eret muohta báikkálaš máilmmis. Integrerejuvvon GPU:at bissot 128 čuoggás.",
   "Controller": "Stivrejeaddji",
   "Copper Golem Statues": "Koahkkagolem-statuijat",
   "Culling": "Goddin",

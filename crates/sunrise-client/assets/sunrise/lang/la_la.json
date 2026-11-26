@@ -57,7 +57,7 @@
   "Chunk loading": "FRUSTUM loading",
   "Chunk loading, culling and power use.": "FRUSTUM loading, decerpendo et usui potentiae.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Cloud layer: off, plana (celeriter) vel 3D (fay).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Crassum longinquis locorum in mundos. Integrated GPUs consistunt in 128 chunks.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Crassum longinquis locorum in mundos. Integrated GPUs consistunt in 128 chunks.",
   "Controller": "Controller",
   "Copper Golem Statues": "Signa aeris Golem",
   "Culling": "Exclusio",

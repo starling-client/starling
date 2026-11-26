@@ -57,7 +57,7 @@
   "Chunk loading": "چنک لوڈنگ",
   "Chunk loading, culling and power use.": "چنک لوڈنگ، کلنگ اور بجلی کا استعمال۔",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "بادل کی تہہ: آف، فلیٹ (تیز) یا 3D (فینسی)۔",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "مقامی دنیاوں میں دور کا خطہ کھردرا۔ انٹیگریٹڈ GPUs 128 چنکس پر رک جاتے ہیں۔",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "مقامی دنیاوں میں دور کا خطہ کھردرا۔ انٹیگریٹڈ GPUs 128 چنکس پر رک جاتے ہیں۔",
   "Controller": "کنٹرولر",
   "Copper Golem Statues": "کاپر گولم مجسمے",
   "Culling": "کلنگ",

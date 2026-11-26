@@ -57,7 +57,7 @@
   "Chunk loading": "Chunk laddning",
   "Chunk loading, culling and power use.": "Chunk loading, utslaktning och kraftanvändning.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Molnlager: av, platt (snabb) eller 3D (fancy).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Grov avlägsen terräng i lokala världar. Integrerade GPU:er stannar vid 128 bitar.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Grov avlägsen terräng i lokala världar. Integrerade GPU:er stannar vid 128 bitar.",
   "Controller": "Styrenhet",
   "Copper Golem Statues": "Koppar Golem statyer",
   "Culling": "Avlivning",

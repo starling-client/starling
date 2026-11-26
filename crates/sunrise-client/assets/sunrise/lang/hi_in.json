@@ -57,7 +57,7 @@
   "Chunk loading": "चंक लोडिंग",
   "Chunk loading, culling and power use.": "चंक लोडिंग, कलिंग और पावर का उपयोग।",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "क्लाउड लेयर: बंद, फ्लैट (तेज़) या 3D (फैंसी)।",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "स्थानीय दुनिया में मोटा दूर का भू-भाग। एकीकृत GPU 128 चंक्स पर रुक जाते हैं।",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "स्थानीय दुनिया में मोटा दूर का भू-भाग। एकीकृत GPU 128 चंक्स पर रुक जाते हैं।",
   "Controller": "कंट्रोलर",
   "Copper Golem Statues": "कॉपर गोलम मूर्तियां",
   "Culling": "कलिंग",

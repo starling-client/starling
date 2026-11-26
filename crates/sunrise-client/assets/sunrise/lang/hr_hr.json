@@ -57,7 +57,7 @@
   "Chunk loading": "Učitavanje komadića",
   "Chunk loading, culling and power use.": "Učitavanje komadića, određivanje vidljivosti i potrošnja energije.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Sloj oblaka: isključeno, ravno (brzo) ili 3D (detaljno).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Grubi udaljeni teren u lokalnim svjetovima. Integrirani GPU-ovi staju na 128 komadića.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Grubi udaljeni teren u lokalnim svjetovima. Integrirani GPU-ovi staju na 128 komadića.",
   "Controller": "Upravljač",
   "Copper Golem Statues": "Kipovi bakrenog golemat",
   "Culling": "Određivanje vidljivosti",

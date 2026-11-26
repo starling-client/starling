@@ -57,7 +57,7 @@
   "Chunk loading": "Φόρτωση κομματιού",
   "Chunk loading, culling and power use.": "Φόρτωση κομματιών, σφαγή και χρήση ενέργειας.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Στρώμα σύννεφου: απενεργοποιημένο, επίπεδο (γρήγορο) ή 3D (φανταχτερό).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Χοντρό μακρινό έδαφος σε τοπικούς κόσμους. Οι ενσωματωμένες GPU σταματούν στα 128 κομμάτια.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Χοντρό μακρινό έδαφος σε τοπικούς κόσμους. Οι ενσωματωμένες GPU σταματούν στα 128 κομμάτια.",
   "Controller": "Ελεγκτής",
   "Copper Golem Statues": "Χάλκινα αγάλματα Golem",
   "Culling": "Σφαγή",

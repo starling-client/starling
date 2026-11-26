@@ -57,7 +57,7 @@
   "Chunk loading": "Gabalu ielāde",
   "Chunk loading, culling and power use.": "Gabalu iekraušana, izkaušana un enerģijas izmantošana.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Mākoņu slānis: izslēgts, plakans (ātrs) vai 3D (iedomāts).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Rupjš attāls reljefs vietējās pasaulēs. Integrētie GPU apstājas pie 128 gabaliem.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Rupjš attāls reljefs vietējās pasaulēs. Integrētie GPU apstājas pie 128 gabaliem.",
   "Controller": "Kontrolieris",
   "Copper Golem Statues": "Vara Golema statujas",
   "Culling": "Izkaušana",

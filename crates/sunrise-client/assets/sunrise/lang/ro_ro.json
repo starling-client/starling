@@ -57,7 +57,7 @@
   "Chunk loading": "Încărcare în bucăți",
   "Chunk loading, culling and power use.": "Încărcarea în bucăți, tăierea și utilizarea energiei.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Strat de nor: dezactivat, plat (rapid) sau 3D (fantezie).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Teren îndepărtat grosier în lumile locale. GPU-urile integrate se opresc la 128 de bucăți.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Teren îndepărtat grosier în lumile locale. GPU-urile integrate se opresc la 128 de bucăți.",
   "Controller": "Controler",
   "Copper Golem Statues": "Statui Golem de cupru",
   "Culling": "Tăiere",

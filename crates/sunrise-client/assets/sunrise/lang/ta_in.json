@@ -57,7 +57,7 @@
   "Chunk loading": "துண்டை ஏற்றுதல்",
   "Chunk loading, culling and power use.": "துண்டை ஏற்றுதல், அகற்றுதல் மற்றும் சக்தி பயன்பாடு.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "கிளவுட் லேயர்: ஆஃப், பிளாட் (வேகமான) அல்லது 3D (ஆடம்பரமான).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "உள்ளூர் உலகங்களில் கரடுமுரடான தொலைதூர நிலப்பரப்பு. ஒருங்கிணைந்த GPUகள் 128 துகள்களில் நிறுத்தப்படும்.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "உள்ளூர் உலகங்களில் கரடுமுரடான தொலைதூர நிலப்பரப்பு. ஒருங்கிணைந்த GPUகள் 128 துகள்களில் நிறுத்தப்படும்.",
   "Controller": "கட்டுப்படுத்தி",
   "Copper Golem Statues": "செப்பு கோலெம் சிலைகள்",
   "Culling": "அழித்தல்",

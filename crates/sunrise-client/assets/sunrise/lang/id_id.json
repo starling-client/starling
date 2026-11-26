@@ -57,7 +57,7 @@
   "Chunk loading": "Pemuatan chunk",
   "Chunk loading, culling and power use.": "Pemuatan chunk, culling, dan penggunaan daya.",
   "Cloud layer: off, flat (fast) or 3D (fancy).": "Lapisan awan: nonaktif, datar (cepat), atau 3D (keren).",
-  "Coarse distant terrain. Integrated GPUs stop at 128 chunks, 256 at Mobile.": "Medan jauh kasar di dunia lokal. GPU terintegrasi berhenti pada 128 chunk.",
+  "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.": "Medan jauh kasar di dunia lokal. GPU terintegrasi berhenti pada 128 chunk.",
   "Controller": "Kontroler",
   "Copper Golem Statues": "Patung Golem Tembaga",
   "Culling": "Penyortiran",
