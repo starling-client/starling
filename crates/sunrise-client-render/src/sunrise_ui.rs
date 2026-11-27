@@ -153,12 +153,21 @@ impl SunriseScreen {
         }];
         all.extend(groups);
         let key = extras_ui::item_row(ExtraItem::ShaderPackKey, s).map_id(SunriseRow::Extra);
+        // Starling: what a pack costs (`shader_ui::pack_cost_rows`) before the key.
+        let mut built_in: Vec<_> = (shader_ui::pack_cost_rows(s).into_iter())
+            .map(|row| row.map_id(SunriseRow::Pack))
+            .collect();
+        built_in.push(key);
         match all.iter_mut().find(|g| g.name == shader_ui::BUILT_IN) {
-            Some(group) => group.rows.push(key),
+            Some(group) => group.rows.extend(built_in),
             None => all.push(Group {
                 name: shader_ui::BUILT_IN,
-                rows: vec![key],
+                rows: built_in,
             }),
+        }
+        // Starling: on a phone what a pack costs goes above however many packs there are.
+        if cfg!(target_os = "android") {
+            all.reverse();
         }
         all
     }

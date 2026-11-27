@@ -20,9 +20,8 @@ impl Renderer {
 
     /// Diagnostic distributions from the existing pass timers, without another profiler.
     pub fn diagnostic_pass_times(&self) -> serde_json::Value {
-        let shader = match (&self.pack_post, &self.native) {
-            (Some((_, Some(post))), _) => post.timing.as_ref(),
-            (_, Some(native)) => native.timing.as_ref(),
+        let shader = match &self.pack_post {
+            Some((_, Some(post))) => post.timing.as_ref(),
             _ => None,
         };
         serde_json::json!({"world":self.own_timing.as_ref().map(pack_timing::PassTiming::distributions),

@@ -16,19 +16,15 @@ impl HudAtlas {
     /// room: a pack of thousands of mixed sizes (server packs with custom
     /// items) fits where the shelves' ragged ends would not.
     pub(super) fn layout(images: &[PackedImage], max: u32) -> Result<(u32, Vec<(u32, u32)>, u32)> {
-<<<<<<< HEAD
         // Starling: a phone's small atlas is packed against a skyline (`mobile_layout`).
         #[cfg(target_os = "android")]
         if max <= 4096 {
             return Self::mobile_layout(images, max);
         }
-||||||| 46c00106def
-=======
         let dims: Vec<(u32, u32)> = images.iter().map(|i| (i.1, i.2)).collect();
         Self::layout_dims(&dims, max)
     }
     fn layout_dims(dims: &[(u32, u32)], max: u32) -> Result<(u32, Vec<(u32, u32)>, u32)> {
->>>>>>> ed6772e2118
         let mut width = 4096.min(max);
         loop {
             let wide_enough = dims.iter().all(|&(w, _)| w < width);
@@ -103,6 +99,9 @@ impl HudAtlas {
         full: bool,
         max_atlas_size: u32,
     ) -> Result<Self> {
+        // Starling: the side the renderer found the GPU takes (`atlas_limit`, which a phone waits
+        // for), where the loader started before the device opened.
+        let max_atlas_size = max_atlas_size.min(atlas_limit());
         let textures = "assets/minecraft/textures";
         let mut files = Vec::new();
         for folder in folders {
@@ -465,102 +464,13 @@ impl HudAtlas {
                 let (width, height, rgba) = decode_bytes(png)?;
                 images.push((format!("sunrise/jei/{name}"), width, height, rgba));
             }
-<<<<<<< HEAD
-            Self::slots(&mut images, crate::trims::slot_size(root), pool);
-            // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
-            // and black quarters.
-            let missing = (0..256)
-                .flat_map(|i| match (i / 16 < 8) ^ (i % 16 < 8) {
-                    true => [248, 0, 248, 255],
-                    false => [0, 0, 0, 255],
-                })
-                .collect();
-            images.push((MISSING_SPRITE.into(), 16, 16, missing));
-        }
-        let limit = atlas_limit();
-        let mut full_sizes = HashMap::new();
-        #[cfg(target_os = "android")]
-        if limit < MAX_ATLAS_SIZE {
-            Self::fit_mobile_atlas(&mut images, &mut full_sizes, &flags, limit)?;
-        }
-        // Blurred sprites are sampled linearly in the atlas (screen.wgsl): a
-        // border wrapped from their own edges keeps the filter off their
-        // neighbours, as repeat addressing of their own texture would.
-        let mut bordered = std::collections::HashSet::new();
-        for image in &mut images {
-            if flags.get(&image.0).is_some_and(|f: &TextureFlags| f.blur) {
-                *image = wrap_border(image);
-                bordered.insert(image.0.clone());
-            }
-        }
-        if full {
-||||||| 46c00106def
-            Self::slots(&mut images, crate::trims::slot_size(root), pool);
-            // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
-            // and black quarters.
-            let missing = (0..256)
-                .flat_map(|i| match (i / 16 < 8) ^ (i % 16 < 8) {
-                    true => [248, 0, 248, 255],
-                    false => [0, 0, 0, 255],
-                })
-                .collect();
-            images.push((MISSING_SPRITE.into(), 16, 16, missing));
-        }
-        // Blurred sprites are sampled linearly in the atlas (screen.wgsl): a
-        // border wrapped from their own edges keeps the filter off their
-        // neighbours, as repeat addressing of their own texture would.
-        let mut bordered = std::collections::HashSet::new();
-        for image in &mut images {
-            if flags.get(&image.0).is_some_and(|f: &TextureFlags| f.blur) {
-                *image = wrap_border(image);
-                bordered.insert(image.0.clone());
-            }
-        }
-        if full {
-=======
             Self::slots(&mut images, crate::trims::slot_size(root));
             let (width, height, missing) = missing_image();
             images.push((MISSING_SPRITE.into(), width, height, missing));
->>>>>>> ed6772e2118
             let (width, height, rgba) =
                 decode_bytes(include_bytes!("../jei_recipes/config_button.png"))?;
             images.push(("sunrise/recipes/settings".to_owned(), width, height, rgba));
         }
-<<<<<<< HEAD
-        images.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
-        let (width, placements, glyph_region) = Self::layout_within(
-            &mut images,
-            &mut animated,
-            &cit_names,
-            &bordered,
-            limit,
-            &mut full_sizes,
-        )
-        .or_else(|error| -> Result<_> {
-            let models = reducible_model_sprites(root, &images, &bordered);
-            let layout =
-                Self::layout_reducing_models(&mut images, &mut gui_sizes, &models, MAX_ATLAS_SIZE)?;
-            log::warn!("reduced HUD model texture resolution to keep the resource pack: {error}");
-            Ok(layout)
-        })?;
-||||||| 46c00106def
-        images.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
-        let (width, placements, glyph_region) =
-            Self::layout_leaving_out(&mut images, &mut animated, &cit_names, MAX_ATLAS_SIZE)
-                .or_else(|error| -> Result<_> {
-                    let models = reducible_model_sprites(root, &images, &bordered);
-                    let layout = Self::layout_reducing_models(
-                        &mut images,
-                        &mut gui_sizes,
-                        &models,
-                        MAX_ATLAS_SIZE,
-                    )?;
-                    log::warn!(
-                        "reduced HUD model texture resolution to keep the resource pack: {error}"
-                    );
-                    Ok(layout)
-                })?;
-=======
         let mut base_images = Vec::with_capacity(images.len());
         let mut registered_images = Vec::new();
         for image in images {
@@ -570,11 +480,27 @@ impl HudAtlas {
                 base_images.push(image);
             }
         }
+        // Starling: on a small GPU (a phone's) the static sprites shrink to fit it before their
+        // borders are wrapped (`fit_mobile_atlas`); each keeps the size it draws at (`full_sizes`).
+        let mut full_sizes = HashMap::new();
+        #[cfg(target_os = "android")]
+        if max_atlas_size < MAX_ATLAS_SIZE {
+            Self::fit_mobile_atlas(&mut base_images, &mut full_sizes, &flags, max_atlas_size)?;
+        }
         let (blur_bordered, clamp_bordered, sprite_borders) =
             pad_sprite_borders(&mut base_images, &flags, u32::MAX)?;
         base_images.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
-        let (width, placements, glyph_region) =
-            Self::layout_leaving_out(&mut base_images, &mut animated, &cit_names, max_atlas_size)
+        // Starling: what still doesn't fit goes to half size, the largest first (`layout_within`),
+        // before the models are reduced. A sprite with a border keeps its size.
+        let padded: HashSet<String> = blur_bordered.union(&clamp_bordered).cloned().collect();
+        let (width, placements, glyph_region) = Self::layout_within(
+            &mut base_images,
+            &mut animated,
+            &cit_names,
+            &padded,
+            max_atlas_size,
+            &mut full_sizes,
+        )
                 .or_else(|error| -> Result<_> {
                 let models = reducible_model_sprites(root, &base_images, &blur_bordered);
                 let layout = Self::layout_reducing_models_with_borders(
@@ -589,104 +515,21 @@ impl HudAtlas {
                 );
                 Ok(layout)
             })?;
->>>>>>> ed6772e2118
         // A multiple of 1024 rather than a power of two: the default resources
         // need 4096x5120 (8192 rows before), Faithful 32x 4096x12288 (16384).
-<<<<<<< HEAD
-        let height = (glyph_region + GLYPH_ROWS)
-            .next_multiple_of(1024)
-            .min(limit);
-        let mut pixels = vec![0u8; (width * height * 4) as usize];
-        let mut sprites = HashMap::new();
-        let mut translucent = HashSet::new();
-        for ((name, w, h, data), (px, py)) in images.iter().zip(placements) {
-            if data
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .any(|p| p[3] != 0 && p[3] != 255)
-            {
-                translucent.insert(name.clone());
-            }
-            if !data.is_empty() {
-                for row in 0..*h {
-                    let src = &data[(row * w * 4) as usize..((row + 1) * w * 4) as usize];
-                    let dst = (((py + row) * width + px) * 4) as usize;
-                    pixels[dst..dst + (w * 4) as usize].copy_from_slice(src);
-                }
-            }
-            let b = u32::from(bordered.contains(name));
-            let (px, py, w, h) = (px + b, py + b, w - 2 * b, h - 2 * b);
-            let (gw, gh) = gui_sizes
-                .get(name)
-                .or(full_sizes.get(name))
-                .copied()
-                .unwrap_or((w, h));
-            sprites.insert(
-                name.clone(),
-                Rect {
-                    u0: px as f32 / width as f32,
-                    v0: py as f32 / height as f32,
-                    u1: (px + w) as f32 / width as f32,
-                    v1: (py + h) as f32 / height as f32,
-                    w: gw,
-                    h: gh,
-                },
-            );
-        }
-        // Every animated sprite animates: the packed strip is the raw first
-        // frame, while the mcmeta's frame list may start anywhere, so each
-        // animation's frame(0) overwrites its atlas rect before drawing.
-||||||| 46c00106def
-        let height = (glyph_region + GLYPH_ROWS).next_multiple_of(1024);
-        let mut pixels = vec![0u8; (width * height * 4) as usize];
-        let mut sprites = HashMap::new();
-        let mut translucent = HashSet::new();
-        for ((name, w, h, data), (px, py)) in images.iter().zip(placements) {
-            if data
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .any(|p| p[3] != 0 && p[3] != 255)
-            {
-                translucent.insert(name.clone());
-            }
-            if !data.is_empty() {
-                for row in 0..*h {
-                    let src = &data[(row * w * 4) as usize..((row + 1) * w * 4) as usize];
-                    let dst = (((py + row) * width + px) * 4) as usize;
-                    pixels[dst..dst + (w * 4) as usize].copy_from_slice(src);
-                }
-            }
-            let b = u32::from(bordered.contains(name));
-            let (px, py, w, h) = (px + b, py + b, w - 2 * b, h - 2 * b);
-            let (gw, gh) = gui_sizes.get(name).copied().unwrap_or((w, h));
-            sprites.insert(
-                name.clone(),
-                Rect {
-                    u0: px as f32 / width as f32,
-                    v0: py as f32 / height as f32,
-                    u1: (px + w) as f32 / width as f32,
-                    v1: (py + h) as f32 / height as f32,
-                    w: gw,
-                    h: gh,
-                },
-            );
-        }
-        // Every animated sprite animates: the packed strip is the raw first
-        // frame, while the mcmeta's frame list may start anywhere, so each
-        // animation's frame(0) overwrites its atlas rect before drawing.
-=======
         let height = glyph_region.saturating_add(GLYPH_ROWS).saturating_add(1023) / 1024 * 1024;
         let height = height.min(max_atlas_size);
         let size = [width, height];
+        // Starling: a sprite shrunk to fit a small GPU keeps the size it draws at.
+        for (name, size) in full_sizes {
+            gui_sizes.entry(name).or_insert(size);
+        }
         let Stitched {
             mut pixels,
             mut sprites,
             placed_sprites,
             translucent,
         } = stitch_pixels(base_images, placements, size, &gui_sizes, &sprite_borders)?;
->>>>>>> ed6772e2118
         let mut loaded = crate::sprites::Sprites::new(root.clone());
         animated.sort();
         let (sprite_animations, sprite_animation_placements) = initialize_animations(

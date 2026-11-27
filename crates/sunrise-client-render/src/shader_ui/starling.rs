@@ -19,6 +19,19 @@ pub(super) fn resolution_value(s: &Settings) -> String {
     }
 }
 
+/// What a pack costs, set only with a pack on: the resolution it runs at, the frame limit and
+/// its profile. Sunrise Settings' Shaders page (`sunrise_ui`) lists them with the built-in
+/// settings.
+pub(crate) fn pack_cost_rows(s: &Settings) -> Vec<Row<Item>> {
+    if s.sunrise.shader_choice().is_none() {
+        return Vec::new();
+    }
+    [Item::Resolution, Item::FpsLimit, Item::PackProfile]
+        .into_iter()
+        .map(|item| row(item, s, &[]))
+        .collect()
+}
+
 /// The profile of the picked pack that runs, as the row shows it.
 pub(super) fn pack_profile_value(s: &Settings) -> String {
     let profile = s.sunrise.shader_choice().map(|c| c.1).unwrap_or_default();
