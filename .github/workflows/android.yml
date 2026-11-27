@@ -50,9 +50,6 @@ jobs:
       matrix:
         include:
           - { abi: arm64-v8a, target: aarch64-linux-android }
-          - { abi: armeabi-v7a, target: armv7-linux-androideabi }
-          - { abi: x86, target: i686-linux-android }
-          - { abi: x86_64, target: x86_64-linux-android }
     # The release key's environment, for a release build only (none otherwise).
     environment: ${{ (github.repository == 'starling-client/starling' && (startsWith(github.ref, 'refs/tags/v') || inputs.release_key)) && 'release' || '' }}
     runs-on: ubuntu-latest
@@ -60,6 +57,9 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
+      # symbols-v0.9.0 only: the library from the release's own commit and source, as it shipped.
+      - name: The release's commit
+        run: git fetch --depth=1 origin ff303502a4f7982551a0e0d3622d9268efe9e829 && git checkout --detach ff303502a4f7982551a0e0d3622d9268efe9e829
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -93,7 +93,7 @@ jobs:
       # The fast profile's 16 codegen units of the game's crate took more than the runner's 16 GB, and the runner
       # went: swap, on the large temporary disk where there is one, and three units at a time instead of four.
       - name: Make room for the release build
-        if: env.RELEASE_BUILD == 'true'
+        if: env.RELEASE_BUILD == 'true' || inputs.keep_symbols
         run: |
           sudo swapoff -a || true
           where=/mnt size=20G
@@ -128,8 +128,8 @@ jobs:
           HORIZON_ANDROID_STORE_PASSWORD: ${{ secrets.STARLING_STORE_PASSWORD }}
           HORIZON_ANDROID_KEY_PASSWORD: ${{ secrets.STARLING_KEY_PASSWORD }}
           MODS: ${{ inputs.native_mods }}
-          PROFILE: ${{ env.RELEASE_BUILD == 'true' && 'fast' || 'quick' }}
-          VARIANT: ${{ env.PREVIEW == 'true' && '--preview' || '' }}
+          PROFILE: ${{ (env.RELEASE_BUILD == 'true' || inputs.keep_symbols) && 'fast' || 'quick' }}
+          VARIANT: ${{ (env.PREVIEW == 'true' && !inputs.keep_symbols) && '--preview' || '' }}
         # Releases with the fast profile (fewer codegen units: a little quicker in game). With native mods, the APK
         # native_build.sh makes, named after them.
         run: |
