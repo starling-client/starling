@@ -1325,6 +1325,8 @@ mod tests {
                 "final",
                 "gbuffers_terrain",
                 "gbuffers_water",
+                // Starling: the breaking cracks through their fallback to terrain (as Iris).
+                "gbuffers_damagedblock",
                 "shadow",
             ]
             .map(str::to_owned)

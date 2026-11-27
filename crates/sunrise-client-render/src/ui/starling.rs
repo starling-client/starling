@@ -137,8 +137,26 @@ impl EditBox {
         if !self.editable {
             return;
         }
+        use mod_api::client::widgets::{byte_index, char_len, utf16_len, utf16_prefix};
         let plain: String = text.chars().filter(|c| !c.is_control()).collect();
-        self.edit.insert_text(&plain);
+        // TextEdit::insert_text without its chat filter (`filter_text`): the selection replaced,
+        // cut to what the maximum length leaves room for, as EditBox.insertText.
+        let edit = &mut self.edit;
+        let (a, b) = edit.selected();
+        let selected_units: usize = edit
+            .value
+            .chars()
+            .skip(a)
+            .take(b - a)
+            .map(char::len_utf16)
+            .sum();
+        let room = edit
+            .max_length
+            .saturating_sub(utf16_len(&edit.value) - selected_units);
+        let insert = utf16_prefix(&plain, room);
+        let (ba, bb) = (byte_index(&edit.value, a), byte_index(&edit.value, b));
+        edit.value.replace_range(ba..bb, &insert);
+        edit.set_cursor(a + char_len(&insert), false);
         self.moved();
     }
 }

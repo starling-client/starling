@@ -148,6 +148,16 @@ Helpers:
   stored in the shadow map, for `textureSampleCompareLevel`.
 - `fn shadow_distort(xy: vec2<f32>) -> vec2<f32>`: the map's distortion of a point at shadow clip `xy`.
 
+With `[ray_tracing]` (needs a ray-query device): binding 14 declares
+`var rt_tlas: acceleration_structure`, the world's BLAS/TLAS, with:
+- `struct RtHit`: `hit` (false on a miss), `t`, `instance` (the TLAS instance),
+  `primitive`, `bary`.
+- `fn rt_trace(origin: vec3<f32>, dir: vec3<f32>, t_min: f32, t_max: f32) -> RtHit`:
+  the nearest solid surface hit in world blocks, or `hit` false on a miss.
+- `fn rt_occluded(origin: vec3<f32>, dir: vec3<f32>, t_min: f32, t_max: f32) -> f32`:
+  1 where the ray hits before `t_max`, else 0. Translucent terrain is not in the
+  structures, so rays pass through water and glass.
+
 ## weather
 
 `fn weather(input: WeatherInput) -> vec4<f32>`
@@ -216,6 +226,16 @@ Helpers:
 - `fn shadow_position(position: vec3<f32>) -> vec3<f32>`: where the camera-relative point `position` is
   stored in the shadow map, for `textureSampleCompareLevel`.
 - `fn shadow_distort(xy: vec2<f32>) -> vec2<f32>`: the map's distortion of a point at shadow clip `xy`.
+
+With `[ray_tracing]` (needs a ray-query device): binding 14 declares
+`var rt_tlas: acceleration_structure`, the world's BLAS/TLAS, with:
+- `struct RtHit`: `hit` (false on a miss), `t`, `instance` (the TLAS instance),
+  `primitive`, `bary`.
+- `fn rt_trace(origin: vec3<f32>, dir: vec3<f32>, t_min: f32, t_max: f32) -> RtHit`:
+  the nearest solid surface hit in world blocks, or `hit` false on a miss.
+- `fn rt_occluded(origin: vec3<f32>, dir: vec3<f32>, t_min: f32, t_max: f32) -> f32`:
+  1 where the ray hits before `t_max`, else 0. Translucent terrain is not in the
+  structures, so rays pass through water and glass.
 
 A `[[post]]` entry with `output = "<name>"` writes a target of the pack's own, at its `scale` of the
 world's size (1, 0.5 or 0.25), instead of the next pass's `previous`; the prelude of every pass declares

@@ -164,6 +164,9 @@ fn content_keys() {
                 "manifest.native" | "manifest.runtime" | "manifest.internals"
             )
         })
+        // Starling: Horizon's single shape `property` (content.rs), read for the old mods; this
+        // corpus is Sunrise's, whose mods write `properties`.
+        .filter(|key| !(key.contains("shapes") && key.ends_with(".property")))
         .collect();
     assert!(
         !coverage.expected.is_empty(),

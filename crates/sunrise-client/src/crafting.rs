@@ -34,6 +34,29 @@ pub mod native_hooks;
 mod priorities;
 #[cfg(test)]
 mod registration_tests;
+#[cfg(test)]
+#[path = "crafting/tests/starling.rs"]
+mod starling_tests;
+
+/// Starling: a pack's recipe file whose serializer no mod registered is left out, the rest load
+/// (`ResolvedRecipes::decode`). The game's start turns it on (android_lib.rs); off, as in Sunrise's
+/// tests, such a file refuses the whole load.
+pub static LENIENT_RECIPE_FILES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+thread_local! {
+    /// A test's own thread loading leniently, beside strict tests running in parallel.
+    static LENIENT_ON_THIS_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn lenient_recipe_files() -> bool {
+    #[cfg(test)]
+    if LENIENT_ON_THIS_THREAD.with(std::cell::Cell::get) {
+        return true;
+    }
+    LENIENT_RECIPE_FILES.load(std::sync::atomic::Ordering::Relaxed)
+}
 mod remainders;
 mod repair_item;
 #[path = "crafting/shapeless_matching.rs"]
@@ -1872,8 +1895,9 @@ impl ResolvedSources {
         // Starling: a file whose serializer no mod registered is left out and the rest load, as
         // vanilla's RecipeManager does with a file it cannot parse: a content mod without its code
         // half then loses those recipes, not the world. One line per serializer, with the first
-        // file and how many went. What a server sends is still checked whole.
-        let lenient = matches!(input, IngredientInput::File(_));
+        // file and how many went. What a server sends is still checked whole. The game turns it on
+        // at its start (`LENIENT_RECIPE_FILES`); Sunrise's tests keep the strict load.
+        let lenient = lenient_recipe_files() && matches!(input, IngredientInput::File(_));
         let mut unregistered = std::collections::BTreeMap::<String, (usize, String)>::new();
         for (name, file) in sources {
             let file = Arc::new(file);

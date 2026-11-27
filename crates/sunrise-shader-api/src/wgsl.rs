@@ -84,18 +84,23 @@ impl Composed {
 
 /// Validates `module`, parsed from `composed`, locating a refusal in the file it came from.
 pub fn validate(composed: &Composed, module: &naga::Module) -> Result<ModuleInfo, Vec<Problem>> {
-    Validator::new(ValidationFlags::all(), Capabilities::default())
-        .validate(module)
-        .map_err(|e| {
-            let at = e.spans().next().and_then(|(span, _)| span.to_range());
-            let mut message = e.as_inner().to_string();
-            let mut source = std::error::Error::source(e.as_inner());
-            while let Some(s) = source {
-                message += &format!(": {s}");
-                source = s.source();
-            }
-            vec![located(composed, at.map(|r| r.start), message)]
-        })
+    // Starling: ray queries for a pack with `[ray_tracing]` (its prelude enables them and adds the
+    // TLAS helpers); a device without them refuses the pack when it loads.
+    Validator::new(
+        ValidationFlags::all(),
+        Capabilities::default() | Capabilities::RAY_QUERY,
+    )
+    .validate(module)
+    .map_err(|e| {
+        let at = e.spans().next().and_then(|(span, _)| span.to_range());
+        let mut message = e.as_inner().to_string();
+        let mut source = std::error::Error::source(e.as_inner());
+        while let Some(s) = source {
+            message += &format!(": {s}");
+            source = s.source();
+        }
+        vec![located(composed, at.map(|r| r.start), message)]
+    })
 }
 
 pub fn located(composed: &Composed, offset: Option<usize>, message: String) -> Problem {
@@ -122,6 +127,14 @@ pub fn translate(
     constants: &naga::back::PipelineConstants,
 ) -> Vec<String> {
     let mut problems = Vec::new();
+    // Starling: a pack with `[ray_tracing]` runs only where ray queries do, on Metal from MSL 2.4.
+    let ray_tracing = module.types.iter().any(|(_, t)| {
+        matches!(
+            t.inner,
+            naga::TypeInner::AccelerationStructure { .. } | naga::TypeInner::RayQuery { .. }
+        )
+    });
+    let msl_version = if ray_tracing { (2, 4) } else { (2, 2) };
     for e in &module.entry_points {
         let fail = |backend: &str, err: String| format!("{backend} refuses it: {err}");
         let processed = naga::back::pipeline_constants::process_overrides(
@@ -150,7 +163,7 @@ pub fn translate(
                 &m,
                 &i,
                 &naga::back::msl::Options {
-                    lang_version: (2, 2),
+                    lang_version: msl_version,
                     ..Default::default()
                 },
                 &naga::back::msl::PipelineOptions {

@@ -45,9 +45,9 @@ pub struct WorldOptions {
     pub difficulty: usize,
     /// Allow Cheats as toggled; unset follows the game mode.
     pub commands: Option<bool>,
-    /// The world preset the world is created with.
-    /// Not kept across a restart (Sunrise's `WorldPreset` has no text form here): Normal again.
-    #[serde(skip, default = "normal_world")]
+    /// The world preset the world is created with, kept across a restart by its registry id
+    /// (`minecraft:flat`; an id this build doesn't know reads as Normal).
+    #[serde(with = "world_type_id", default = "normal_world")]
     pub world_type: crate::save::WorldPreset,
     /// The biome the single-biome preset fixes (`CreateBuffetWorldScreen`'s
     /// choice), `minecraft:plains` until another is picked.

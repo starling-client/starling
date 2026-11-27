@@ -3454,7 +3454,8 @@ in VertexData {{ {member} }} vIn;
             &preprocess(&pack, "gbuffers_terrain.fsh", &m),
             Target::Buffers,
             &game,
-            InterfaceLimits::WGPU_DEFAULT,
+            // Sixteen varyings fill the default 16 locations; the prepass's goes past them.
+            crate::post::DEVICELESS_INTERFACE_LIMITS,
         )
         .unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(p.interface.prepass_uv, Some(16));

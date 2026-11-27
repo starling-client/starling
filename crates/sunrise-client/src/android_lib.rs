@@ -35,6 +35,9 @@ fn android_main(app: AndroidApp) {
 /// these the game stops at its first mod guard ("engine platform socket is not installed").
 fn install_platform() -> Result<(), String> {
     register_parts();
+    // Starling: a pack's recipe file of an unregistered serializer is left out, not the world.
+    sunrise_client::crafting::LENIENT_RECIPE_FILES
+        .store(true, std::sync::atomic::Ordering::Relaxed);
     sunrise_mod_host::install_platform()?;
     mod_render::render::install();
     Ok(())
