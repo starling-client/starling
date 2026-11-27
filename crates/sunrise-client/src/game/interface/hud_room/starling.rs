@@ -4,6 +4,8 @@
 
 #[allow(unused_imports)]
 use super::*;
+#[cfg(target_os = "android")]
+use crate::game::Screen;
 
 /// The HUD works in local safe-area coordinates. Move its vertices and item
 /// scissors back into the full frame after drawing it.
