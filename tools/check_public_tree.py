@@ -47,6 +47,10 @@ ORIGINAL_ANDROID = {
     "packaging/android/java/io/github/juanluci/starling/GameFolderProvider.java",
     # The same activity before the app was named Starling, in the history.
     "packaging/android/java/dev/sunrise/android/SunriseActivity.java",
+    # The history's own names for that activity and for SunriseImport.java, from before the Sunrise rename (a push
+    # checks every commit of the branch, and those paths are in its history as written then).
+    "packaging/android/java/dev/" + "horizon/android/" + "Horizon" + "Activity.java",
+    "packaging/android/java/io/github/juanluci/starling/" + "Horizon" + "Import.java",
 }
 # The prepared folder's files in one file (crates/sunrise-core/src/prepared_files.rs): Mojang's data.
 PRIVATE_NAMES = {"sunrise-data.bin"}
