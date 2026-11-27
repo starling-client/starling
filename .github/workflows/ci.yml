@@ -137,8 +137,9 @@ jobs:
       - name: Test Rust core and voxel kernel correctness
         if: steps.rust.outputs.required != 'false'
         run: |
-          # Starling: every failing test in one run, not just the first crate's.
-          cargo +stable test --workspace --lib --bins --tests --no-fail-fast
+          # Starling: every failing test in one run, not just the first crate's, two at a time (all of them
+          # at once lost the hosted runner, 27/11).
+          RUST_TEST_THREADS=2 cargo +stable test --workspace --lib --bins --tests --no-fail-fast
           cargo +stable test --workspace --doc
       # After the workspace is built: the audit reads sunrise-mod-vocab's generated signatures
       # from the build output, and refuses to pass without them.

@@ -1066,10 +1066,7 @@ pub fn validate_transient_color_binding(
     let Some(&fmt) = desc.color_targets.get(attachment as usize) else {
         return false;
     };
-    if filterable && fmt == RenderTargetFormat::R32Float && !float32_filterable {
-        return false;
-    }
-    true
+    !(filterable && fmt == RenderTargetFormat::R32Float && !float32_filterable)
 }
 
 /// Validate a transient target depth sampler binding against its descriptor during draw recording.
