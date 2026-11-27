@@ -540,13 +540,6 @@ impl Game<'_> {
             13 => self.confirm_trusted_link(feedback_link(), Screen::Paused),
             // PauseScreen: `new SocialInteractionsScreen(this)`.
             15 => self.open_social(true),
-            // The world saves and the game ends as Quit does; the app starts again in the
-            // launcher (android::finish_and_exit).
-            31 => {
-                #[cfg(target_os = "android")]
-                crate::ha_launcher::back_to_launcher();
-                self.begin_closing_save(true)?;
-            }
             id @ ADDED_PAGES.. => {
                 let page = usize::from(id - ADDED_PAGES);
                 self.open_options_at(false, sunrise_client::options_ui::Page::Added(page));
@@ -576,7 +569,6 @@ impl Game<'_> {
                     && *i < usize::from(u8::MAX - ADDED_PAGES)
             })
             .map(|(i, page)| (page.title(), ADDED_PAGES + i as u8))
-            .chain(cfg!(target_os = "android").then_some((LAUNCHER, 31)))
     }
     pub(super) fn pause_click(&mut self) -> Result<bool> {
         let (w, h) = {

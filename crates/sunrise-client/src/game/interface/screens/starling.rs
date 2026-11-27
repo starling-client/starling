@@ -4,6 +4,3 @@
 
 #[allow(unused_imports)]
 use super::*;
-
-/// Starling on Android: the row back to the launcher (`ha_launcher`), the world saved first.
-pub(super) const LAUNCHER: &str = "starling.launcher.button";

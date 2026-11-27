@@ -170,7 +170,6 @@
   "sunrise.mods.not_built_tip": "Instalado, mas não está neste jogo: compile o jogo com ele no launcher (Configurações > Mods nativos) e jogue a instância dessa build.",
   "starling.mods.native.not_built_tip": "Instalado, ainda não está no jogo: Compilar monta o jogo com ele no servidor de build do Starling.",
   "starling.account.title": "Contas",
-  "starling.launcher.button": "Launcher",
   "starling.account.active": "Jogando como %s",
   "starling.account.offline": "Offline",
   "starling.account.working": "Entrando…",

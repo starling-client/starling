@@ -132,7 +132,6 @@
   "starling.controls.interact_look": "Look while interacting",
   "starling.controls.interact_look_hint": "Drag while attacking, placing blocks or using an item.",
   "starling.account.title": "Accounts",
-  "starling.launcher.button": "Launcher",
   "starling.account.active": "Playing as %s",
   "starling.account.offline": "Offline",
   "starling.account.working": "Signing in…",

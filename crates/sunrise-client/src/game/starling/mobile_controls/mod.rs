@@ -1658,17 +1658,6 @@ impl Game<'_> {
                     let _ = self.mobile.controls.settings.save();
                     std::process::exit(0);
                 }
-                // As the pause menu's Launcher row: a world saves and the game ends as Quit does,
-                // and the app starts again in the launcher (ha_launcher).
-                InGameMenuAction::OpenLauncher => {
-                    #[cfg(target_os = "android")]
-                    crate::ha_launcher::back_to_launcher();
-                    if self.title.is_some() || self.player.is_none() {
-                        events.exit();
-                    } else {
-                        self.begin_closing_save(true)?;
-                    }
-                }
                 InGameMenuAction::OpenLogs => {
                     // Logs are private to the app; the SAF provider shares the Reports
                     // folder the diagnostics exporter writes into.

@@ -688,6 +688,15 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
             rows.retain(|r| !matches!(r.item, Item::Sunrise(H::ParallelTick)));
         }
     }
+    // Starling: no frame generation on Android, where players turned it on and crashed (promised
+    // 23/11); the game keeps it off there whatever the settings say (options.rs).
+    if cfg!(target_os = "android") {
+        for (_, groups) in &mut pages {
+            for (_, rows) in groups {
+                rows.retain(|r| !matches!(r.item, Item::Sunrise(H::FrameGeneration)));
+            }
+        }
+    }
     // Starling finds the fastest way of drawing on the phone it runs on (game/starling/perf_lab.rs).
     if cfg!(target_os = "android")
         && let Some((_, groups)) = pages.iter_mut().find(|(p, _)| *p == Page::Performance)

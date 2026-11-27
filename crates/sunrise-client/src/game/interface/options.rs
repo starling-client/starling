@@ -813,8 +813,10 @@ impl Game<'_> {
                 s.sunrise.upscaling.ratio(),
                 s.sunrise.upscaling_sharpness as f32 / 100.0,
             );
+            // Starling: never on Android, where turning it on crashed phones (promised 23/11).
             r.set_frame_generation(
-                s.sunrise.frame_generation != sunrise_client::graphics::FrameGeneration::Off,
+                !cfg!(target_os = "android")
+                    && s.sunrise.frame_generation != sunrise_client::graphics::FrameGeneration::Off,
             );
             r.set_hdr_lighting(s.sunrise.hdr_lighting);
             // Where it is offered (`Renderer::gpu_culling_offer`); unchanged, it does nothing.
