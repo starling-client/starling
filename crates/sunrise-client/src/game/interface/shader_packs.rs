@@ -928,7 +928,7 @@ impl Game<'_> {
                 self.pack.clouds.0,
             ) as f32
                 * 0.030_000_001,
-            mod_params: [[0.0; 4]; 8],
+            mod_params: self.native_shader_params_now(partial),
             status,
             end_flash,
             end_flash_direction,

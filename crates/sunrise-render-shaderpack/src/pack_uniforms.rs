@@ -83,7 +83,7 @@ pub struct PackInputs {
     /// times vanilla's 0.03 blocks a tick). Iris 1.11.7 gives it, though ShaderDoc doesn't list
     /// it: observed with a probe pack, three game times 0.03 apart per tick.
     pub cloud_time: f32,
-    /// What `frame.mods` of a native pack reads: always zero, since no mod hook fills it.
+    /// The values native mods hand their packs (`frame.mods`, `native_shader_params`).
     pub mod_params: [[f32; 4]; 8],
     /// The player's state, for Iris's status uniforms.
     pub status: PlayerStatus,

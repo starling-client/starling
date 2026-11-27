@@ -3948,6 +3948,13 @@ impl Game<'_> {
             page.settings = settings;
         }
     }
+    /// What native mods hand shader packs in this frame (`native_shader_params`),
+    /// with values that aren't finite as 0.
+    pub(super) fn native_shader_params_now(&self, partial: f32) -> [[f32; 4]; 8] {
+        let mut params = [[0.0; 4]; 8];
+        self.native_shader_params(partial, &mut params);
+        finite_params(params)
+    }
 }
 
 /// Whether F3's debug screen, open when `debug`, covers `corner`

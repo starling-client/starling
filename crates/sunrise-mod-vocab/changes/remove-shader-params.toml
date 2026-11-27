@@ -1,3 +1,0 @@
-ids = ["hook:shader_params", "method:Hooks::shader_params", "type:HookId", "type:ShaderParamsEvent"]
-why = "The `shader_params` hook fed `frame.mods` of a mod-bundled native WGSL shader pack. That native pack API is removed (sunrise#5533), so the hook has no target; shader packs are the Iris-format `shaders/` folders and mod render pipelines are written in GLSL."
-migrate = "Delete your `Hooks::shader_params` implementation. A mod that set values for its own native pack moves them into the uniforms of its own render pipeline (sunrise#5426, sunrise#5428)."

@@ -12,3 +12,9 @@ pub(in crate::game) fn sound_id(id: &str) -> bool {
         && namespace.chars().all(|c| allowed(c, false))
         && path.chars().all(|c| allowed(c, true))
 }
+
+/// `params` with each value that isn't finite as 0, so a mod's mistake can't
+/// put a NaN in every pixel of a pack's picture.
+pub(super) fn finite_params(params: [[f32; 4]; 8]) -> [[f32; 4]; 8] {
+    params.map(|v| v.map(|x| if x.is_finite() { x } else { 0.0 }))
+}

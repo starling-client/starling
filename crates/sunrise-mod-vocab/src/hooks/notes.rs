@@ -1156,6 +1156,15 @@ position and aim are unchanged.
   cut to 4 either way; an upward push lifts the player off the ground. A spectator, no player, or a value that isn't
   a number is left alone. A server mod that wants a client pushed sends its client half a message.
 
+### Values for a mod's shader pack
+
+`shader_params(partial, params)` (client) asks every frame, while a Sunrise shader pack is on, for eight
+`[f32; 4]` that every stage of the pack reads as `frame.mods` (`array<vec4<f32>, 8>`, docs/api/shaders-reference.md). What
+they mean is the mod's own: a mod that bundles its pack as `native-<mod id>` writes the slots that pack reads, such as an
+explosion's centre (camera-relative, from `frame.camera_position`) and its age in seconds, for a cloud or a shock wave
+ray marched in a post pass against `scene_depth`. A value that isn't finite reads as 0, and all are 0 when no mod sets
+them. The mod's server half can send what happened to each client half with mod messages.
+
 ### Biome colours
 
 `crates/sunrise-client/src/game/modding/biome_colors.rs`: the grass, leaf and water colours a client mod changes while the
@@ -1169,6 +1178,8 @@ game runs, for seasons (a golden autumn, a pale winter) or a world that greens a
   change and once when the player joins, not every tick: a rebuild takes the workers a few seconds. A slow fade is a
   call a day, not a frame.
 - Block-breaking and falling-leaf particles keep the biome's own colours.
+- A season's mood in a shader pack (warmer grading, a lower sun, more haze) comes from the same mod through
+  `shader_params` (`frame.mods`); its server half can send the season to each client with mod messages.
 
 ### Sounds a client mod plays
 
@@ -1755,6 +1766,10 @@ game `Host`, handle constructors or transactions. Declarations still go on each 
   from its `assets/<id>/sounds.json`, for this player only: an interface sound (`SoundPlay::ui`) or one at a place
   (`SoundPlay::at`), immediately at the audio update or after the requested delay, so a client mod can click its own
   buttons or time a blast's sound to its shock wave. Its `SoundRef` follows and controls the individual play.
+
+- Values for a mod's own shader pack: `shader_params(partial, params)` asks each frame for eight `vec4`s that
+  every stage of a Sunrise shader pack reads as `frame.mods`, so a mod can tell the pack it bundles where and when
+  something happened (an explosion's centre and age for a cloud drawn in a post pass).
 
 - Menus of content mods' own menu types (vanilla's `MenuType`): a mod container's `menu` may name a menu type its content mod declares in `data/<id>/sunrise/menu/` with as many slots ([making a content mod](../how-to/content-mods.md#menu-types)). It opens when the block is used, its data slots are the block entity's `data`, and a Sunrise client shows it through the mod's registered screen factory. Server collect hooks `recipe_sources` and `menu_links` name lent ingredient and linked-slot containers; see the menu-types guide for ordering, skips, write-back, uncapped resolution in both, and `menu_links`'s no-listener tick path.
 

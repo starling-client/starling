@@ -19,6 +19,16 @@ fn hand_pose_rejects_invalid_components() {
     assert_eq!(point, glam::Vec3::new(3.0, 2.0, 3.0));
 }
 
+/// A mod's shader values that aren't finite read as 0.
+#[test]
+fn shader_params_that_arent_finite_read_as_zero() {
+    let mut params = [[1.0; 4]; 8];
+    params[0] = [f32::NAN, 2.0, f32::INFINITY, -3.0];
+    let out = super::finite_params(params);
+    assert_eq!(out[0], [0.0, 2.0, 0.0, -3.0]);
+    assert_eq!(out[7], [1.0; 4]);
+}
+
 /// `native_play_sound` takes vanilla's and mods' sound ids, nothing else.
 #[test]
 fn sound_ids_are_identifiers() {
