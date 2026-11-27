@@ -177,17 +177,18 @@ impl Game<'_> {
                 skins::drawable_skin(local, skins.get(&local), show_cape, |sprite| {
                     self.again_skin(sprite)
                 });
+            let (skin, cape) = (skin.to_owned(), cape.map(str::to_owned));
             // Starling: the wardrobe's cape (Android), in place of the account's.
             #[cfg(target_os = "android")]
-            let cape = if self.settings.file.bool("modelPart_cape") {
+            let cape = if show_cape {
                 self.wardrobe_cape(cape)
             } else {
                 None
             };
             if let Some(mob) = self.player_model.as_mut() {
-                mob.skin = Some(skin.to_owned());
+                mob.skin = Some(skin);
                 mob.slim = is_slim;
-                mob.cape = cape.map(str::to_owned);
+                mob.cape = cape;
             }
         }
         if let Some(r) = self.remote.as_mut()
