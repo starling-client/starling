@@ -1771,6 +1771,7 @@ fn no_draw(device: &wgpu::Device, name: String, group: Group, flip: u16, storage
         group,
         pipeline: Pipeline::NoDraw { storage },
         sky_parts: None,
+        prepass: None,
         water_mask: None,
         polygon_offset: None,
         samplers: Vec::new(),
@@ -2958,6 +2959,8 @@ impl PackPost {
                     ids: None,
                     cull: spec.cull,
                     pages: false,
+                    // Starling: a mod's own geometry draws once.
+                    prepass: false,
                 };
                 pack.mod_depth_target.set(active_depth);
                 pack.depth_compare.set(spec.depth_compare);

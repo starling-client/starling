@@ -22,8 +22,6 @@ pub enum Value {
     Floats(Vec<f32>),
     Pos([i32; 3]),
     OptPos(Option<[i32; 3]>),
-    /// Starling: an optional GlobalPos, a dimension's key and a block position.
-    OptGlobalPos(Option<(String, [i32; 3])>),
     OptUuid(Option<u128>),
     /// Any VarInt-valued serializer (direction, block state, pose, variants ...).
     Id(i32),
@@ -673,13 +671,6 @@ fn write_value(kind: i32, v: &Value, w: &mut Writer) {
                 crate::buf::Pos::write(p, w);
             }
         }
-        Value::OptGlobalPos(p) => {
-            w.bool(p.is_some());
-            if let Some((dimension, pos)) = p {
-                w.string(dimension);
-                crate::buf::Pos::write(pos, w);
-            }
-        }
         Value::OptUuid(u) => {
             w.bool(u.is_some());
             if let Some(u) = u {
@@ -782,9 +773,6 @@ impl crate::retained::OwnedHeap for Value {
                 0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
             }
             Self::OptPos(field_0) => {
-                0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
-            }
-            Self::OptGlobalPos(field_0) => {
                 0usize.saturating_add(crate::retained::OwnedHeap::owned_heap_bytes(field_0))
             }
             Self::OptUuid(field_0) => {
