@@ -11,9 +11,9 @@ use crate::inputs::{DISPLACEMENT_INPUT, Frame};
 use crate::manifest::{OptionKind, PackOption};
 use crate::package::Pack;
 use crate::stages::{StageKind, compose};
+use crate::wgsl::{Composed, Problem, located, problem, translate, validate};
 use naga::valid::ModuleInfo;
 use std::collections::HashSet;
-use sunrise_mod_pipeline::check::{Composed, Problem, located, problem, translate, validate};
 
 /// naga expressions a stage may hold, over all its functions.
 pub const MAX_EXPRESSIONS: usize = 20_000;
@@ -199,14 +199,14 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
 }
 
 /// Builds and checks one stage of `pack` from its file, on a thread of its own with the stack
-/// and the bounds of [`sunrise_mod_pipeline::guard`]: a pack's file never crashes the checker.
+/// and the bounds of [`crate::guard`]: a pack's file never crashes the checker.
 pub fn check_stage(
     pack: &Pack,
     kind: StageKind,
     file: &str,
     entry: usize,
 ) -> Result<CheckedStage, Vec<Problem>> {
-    sunrise_mod_pipeline::guard::guarded(|| build_stage(pack, kind, file, entry))
+    crate::guard::guarded(|| build_stage(pack, kind, file, entry))
         .unwrap_or_else(|reason| Err(vec![problem(file, reason)]))
 }
 
@@ -219,7 +219,7 @@ fn build_stage(
     // First without the entry points, so a missing or mistyped stage function
     // is reported as such rather than as a call that doesn't resolve.
     let mut own = compose(pack, kind, file, entry);
-    if let Some((at, message)) = sunrise_mod_pipeline::guard::refusal(&own.text) {
+    if let Some((at, message)) = crate::guard::refusal(&own.text) {
         return Err(vec![located(&own, at, message)]);
     }
     let entries = own.parts.pop().expect("entries are the last part");

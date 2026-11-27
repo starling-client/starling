@@ -4,11 +4,13 @@
 //! launcher and the registry all use it, so a pack is judged the same way
 //! everywhere.
 pub mod check;
+pub mod guard;
 pub mod inputs;
 pub mod manifest;
 pub mod package;
 pub mod reference;
 pub mod stages;
+pub mod wgsl;
 
 pub use check::{Report, check};
 pub use inputs::Frame;
@@ -18,4 +20,4 @@ pub use manifest::{
 };
 pub use package::{EXTENSION, Pack};
 pub use stages::{StageKind, compose};
-pub use sunrise_mod_pipeline::check::{Composed, Problem};
+pub use wgsl::{Composed, Problem};

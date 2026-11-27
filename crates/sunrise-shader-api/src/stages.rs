@@ -8,8 +8,7 @@ use crate::inputs::{
 };
 use crate::manifest::Api;
 use crate::package::Pack;
-use sunrise_mod_pipeline::COLOR_HELPERS;
-use sunrise_mod_pipeline::check::Composed;
+use crate::wgsl::{COLOR_HELPERS, Composed};
 
 /// The bind group of a pack's resources; groups 0 to 2 are the renderer's.
 pub const GROUP: u32 = 3;
