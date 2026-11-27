@@ -30,3 +30,27 @@ pub(super) fn calibration_group() -> (&'static str, Vec<Setting>) {
         ],
     )
 }
+
+#[cfg(test)]
+mod present_mode_tests {
+    use super::super::*;
+
+    /// Mailbox and Immediate only run with VSync off, so choosing one turns VSync off, Fifo
+    /// turns it on, and VSync turned on puts a Mailbox or Immediate choice back to Auto.
+    #[test]
+    fn present_mode_and_vsync_follow_each_other() {
+        use crate::graphics::PresentMode as P;
+        let none = EffectiveOutput::NONE;
+        let mut s = Settings::default();
+        s.vsync = true;
+        s.sunrise.present_mode = P::Fifo;
+        Item::Sunrise(H::PresentMode).cycle(&mut s, false, [854, 480], &none);
+        assert_eq!((s.sunrise.present_mode, s.vsync), (P::Mailbox, false));
+        Item::Sunrise(H::PresentMode).cycle(&mut s, true, [854, 480], &none);
+        assert_eq!((s.sunrise.present_mode, s.vsync), (P::Fifo, true));
+        s.sunrise.present_mode = P::Immediate;
+        s.vsync = false;
+        Item::Vanilla(Opt::Vsync).cycle(&mut s, false, [854, 480], &none);
+        assert_eq!((s.sunrise.present_mode, s.vsync), (P::Auto, true));
+    }
+}

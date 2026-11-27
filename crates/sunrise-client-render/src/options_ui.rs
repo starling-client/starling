@@ -1391,7 +1391,16 @@ impl Opt {
             Opt::DiscreteScroll => s.discrete_scroll = !s.discrete_scroll,
             Opt::AllowCursorChanges => s.allow_cursor_changes = !s.allow_cursor_changes,
             Opt::ViewBobbing => s.view_bobbing = !s.view_bobbing,
-            Opt::Vsync => s.vsync = !s.vsync,
+            Opt::Vsync => {
+                s.vsync = !s.vsync;
+                // Starling: VSync on presents with Fifo, so a Mailbox or Immediate choice goes back
+                // to Auto and the Present Mode row says what runs (graphics_ui.rs sets VSync off
+                // when one is chosen).
+                use crate::graphics::PresentMode as P;
+                if s.vsync && matches!(s.sunrise.present_mode, P::Mailbox | P::Immediate) {
+                    s.sunrise.present_mode = P::Auto;
+                }
+            }
             Opt::Fullscreen => s.fullscreen = !s.fullscreen,
             Opt::ExclusiveFullscreen => {
                 let on = s.file.bool("exclusiveFullscreen");

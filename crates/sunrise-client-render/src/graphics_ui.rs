@@ -1193,6 +1193,16 @@ impl H {
             }
             _ => {}
         }
+        // Starling: Mailbox and Immediate only run with VSync off (`Renderer::set_present_mode`),
+        // and Fifo is VSync: the choice sets VSync with it, instead of doing nothing while a phone
+        // has VSync on (its default).
+        if self == H::PresentMode {
+            match s.sunrise.present_mode {
+                PresentMode::Mailbox | PresentMode::Immediate => s.vsync = false,
+                PresentMode::Fifo => s.vsync = true,
+                PresentMode::Auto => {}
+            }
+        }
     }
 }
 fn max_workers() -> u32 {
@@ -1255,9 +1265,6 @@ impl Item {
             Item::Sunrise(H::MaliFastTerrain) if !crate::graphics::mali_fast_terrain_offered() => {
                 Some("Your GPU or graphics API doesn't support it.")
             }
-            // Starling: VSync on presents with Fifo whatever this says (`Renderer::set_present_mode`),
-            // and a phone starts with VSync on: greyed, it doesn't look like a switch that does nothing.
-            Item::Sunrise(H::PresentMode) if s.vsync => Some("Only with VSync off (Video Settings)."),
             Item::Sunrise(H::EntityCullingPrecheck)
                 if s.sunrise.entity_culling != EntityCullingMode::Asynchronous =>
             {
