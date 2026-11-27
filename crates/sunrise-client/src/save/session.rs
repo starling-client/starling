@@ -20,8 +20,22 @@ impl SessionLock {
             .create(true)
             .truncate(false)
             .open(world.join("session.lock"))?;
-        file.try_lock()
-            .map_err(|_| format!("{} is already open in another instance", world.display()))?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => {
+                return Err(
+                    format!("{} is already open in another instance", world.display()).into(),
+                );
+            }
+            // Starling: a filesystem without file locks (Android's shared storage): the world
+            // opens unlocked, as vanilla's DirectoryLock does where locking is unsupported.
+            Err(fs::TryLockError::Error(e)) => {
+                log::warn!(
+                    "Sunrise: {} cannot be locked ({e}); opening it unlocked",
+                    world.display()
+                )
+            }
+        }
         file.set_len(0)?;
         file.write_all(&[0x26, 0x03])?;
         file.flush()?;
@@ -67,7 +81,8 @@ pub fn upgrade_older_world_with(
     world: &Path,
     progress: &sunrise_world::datafix::progress::UpgradeProgress,
 ) -> Result<()> {
-    let Some(root) = read_dat(&world.join("level.dat")) else {
+    // Starling: a world whose level.dat is missing opens from level.dat_old.
+    let Some(root) = read_level_dat(world) else {
         return Ok(());
     };
     let version = root.get("Data").map_or(i64::from(DATA_VERSION), |d| {

@@ -5,10 +5,14 @@ pub fn read_dat(path: &Path) -> Option<Tag> {
 }
 /// `read_dat`, with why the file did not read.
 pub(super) fn try_read_dat(path: &Path) -> std::result::Result<Tag, DatIssue> {
-    let bytes = fs::read(path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => DatIssue::Missing,
-        _ => DatIssue::Unreadable(e.to_string()),
-    })?;
+    // Starling: the newest queued copy first (`later`).
+    let bytes = match later::queued(path) {
+        Some(bytes) => bytes,
+        None => fs::read(path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => DatIssue::Missing,
+            _ => DatIssue::Unreadable(e.to_string()),
+        })?,
+    };
     let raw = match Compression::Gzip.decode(&bytes, Limits::saved().max_bytes) {
         Ok(raw) => raw,
         Err(_) => bytes,
@@ -115,6 +119,16 @@ pub(super) fn back_up_unreadable_player(path: &Path) {
 }
 /// Write a gzip NBT file the way vanilla does (`<name>_new`, keep `_old`).
 pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
+    // Starling: inside `later::deferred` it goes to the background writer.
+    if later::is_deferred() {
+        later::queue(path, later::Job::Dat(tag));
+        return Ok(());
+    }
+    // A queued older copy must not land after this one.
+    later::flush();
+    write_dat_now(path, tag)
+}
+fn write_dat_now(path: &Path, tag: Tag) -> Result<()> {
     write_dat_as(path, tag, false)
 }
 
@@ -122,12 +136,14 @@ pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
 /// folder after, so a power loss leaves the old file or the new one. A hand-over's commit
 /// point (`player-confirm`) replies only once its files are.
 pub fn write_dat_durable(path: &Path, tag: Tag) -> Result<()> {
+    later::flush();
     write_dat_as(path, tag, true)
 }
 
 /// `bytes` written to `path` through `<name>_new` and a rename, synced to the disk as
 /// [`write_dat_durable`] syncs: never a half-written file in place.
 pub fn write_durable(path: &Path, bytes: &[u8]) -> Result<()> {
+    later::flush();
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }

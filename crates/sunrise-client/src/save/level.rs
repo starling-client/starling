@@ -836,7 +836,8 @@ impl Level {
     ) -> Result<()> {
         fs::create_dir_all(dir)?;
         restore_level_dat(dir);
-        let existing = read_dat(&dir.join("level.dat"));
+        // Starling: level.dat, else level.dat_old (`read_level_dat`).
+        let existing = read_level_dat(dir);
         // `saveAllChunks` passes the single-player profile independently of `PlayerList`.
         // For an existing world with no placed owner, keep its on-disk reference (even
         // when absent); `self.player_uuid` can name a different profile in that case.
