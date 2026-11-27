@@ -31,14 +31,10 @@ impl Game<'_> {
             && self.captured
             && self.focused
             && !self.options.offscreen
-            && self.screen == Screen::Playing
+            && (self.screen == Screen::Playing || self.mod_screen_grabs_pointer())
         {
-            self.note_input(
-                input_trace::InputOrigin::User,
-                input_trace::TraceKind::Motion { x, y },
-            );
-            self.mouse.on_move(0.0, 0.0, x, y, true, true);
-            self.last_input = Instant::now();
+            // Sunrise's: the camera's turn, or a grabbing mod screen's motion.
+            self.grabbed_pointer_motion([x, y]);
         }
     }
 }

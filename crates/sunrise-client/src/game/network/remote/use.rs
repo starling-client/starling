@@ -404,21 +404,11 @@ impl Game<'_> {
             face: sunrise_core::geometry::Direction::ALL[face_direction(hit.face) as usize],
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
             inside: hit.inside,
-<<<<<<< HEAD
-            yaw: self.interaction_rotation().0,
-            pitch: self.interaction_rotation().1,
-            sneaking: self.remote_shift_down(),
-||||||| 46c00106def
-            yaw: self.yaw,
-            pitch: self.pitch,
-            sneaking: self.remote_shift_down(),
-=======
             source: sunrise_world::level::PlacementSource::Player {
-                yaw: self.yaw,
-                pitch: self.pitch,
+                yaw: self.interaction_rotation().0,
+                pitch: self.interaction_rotation().1,
                 sneaking: self.remote_shift_down(),
             },
->>>>>>> ed6772e2118
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
         };

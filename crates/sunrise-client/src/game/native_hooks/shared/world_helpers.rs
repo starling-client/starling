@@ -211,14 +211,10 @@ impl<'g> Game<'g> {
         if status_row {
             self.keep_status_rows(&batch.vertices[start..], batch.width, batch.height);
         }
-<<<<<<< HEAD
-        self.native_gui_layer_draw(id, batch);
-||||||| 46c00106def
-=======
         if let Some(bounds) = batch.visible_vertex_bounds(start) {
             self.hud_layer_bounds.push((id, bounds));
         }
->>>>>>> ed6772e2118
+        self.native_gui_layer_draw(id, batch);
         self.native_gui_layer_post(id, batch);
         self.apply_gui_status_heights();
     }

@@ -36,16 +36,7 @@ impl Game<'_> {
         let Some(framebuffer) = self.renderer_framebuffer() else {
             return Vec::new();
         };
-<<<<<<< HEAD
-        let batch = self.interface_batch([renderer.config.width, renderer.config.height]);
-||||||| 46c00106def
-        let batch = HudBatch::new(
-            [renderer.config.width, renderer.config.height],
-            self.settings.gui_scale_inputs(),
-        );
-=======
-        let batch = HudBatch::new(framebuffer, self.settings.gui_scale_inputs());
->>>>>>> ed6772e2118
+        let batch = self.interface_batch(framebuffer);
         let mut areas = self.screen_own_exclusion(&batch);
         self.native_screen_exclusion_areas(&view, &mut areas);
         areas.retain(|a| a.iter().all(|v| v.is_finite()) && a[2] > 0.0 && a[3] > 0.0);

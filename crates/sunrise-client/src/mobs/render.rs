@@ -2978,13 +2978,8 @@ fn render_selected(
         };
         let paint = Paint {
             uv,
-<<<<<<< ours
-            layer.scroll,
-            color,
-=======
             scroll: layer.scroll,
-            color: layer.color,
->>>>>>> theirs
+            color,
             light,
             overlay,
         };

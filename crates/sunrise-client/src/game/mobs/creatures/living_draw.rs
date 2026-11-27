@@ -263,8 +263,7 @@ impl Game<'_> {
             // the others have no `isInvisible` check.
             let chest = mob.extra.slot_id(sunrise_items::equipment::CHEST);
             // `CapeLayer` and `Deadmau5EarsLayer`: `!state.isInvisible`, whoever sees the body.
-<<<<<<< HEAD
-            if !invisible {
+            if !invisible && !hidden.contains(mod_api::StockLayer::Cape) {
                 self.player_cape_geometry(
                     mob,
                     chest,
@@ -276,13 +275,6 @@ impl Game<'_> {
                     ),
                     out,
                 );
-||||||| 46c00106def
-            if !invisible {
-                self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, out);
-=======
-            if !invisible && !hidden.contains(mod_api::StockLayer::Cape) {
-                self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, out);
->>>>>>> ed6772e2118
             }
             if !invisible
                 && !hidden.contains(mod_api::StockLayer::Deadmau5Ears)

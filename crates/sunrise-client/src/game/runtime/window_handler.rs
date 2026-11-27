@@ -649,19 +649,7 @@ impl ApplicationHandler for Game<'_> {
             if x != 0.0 || y != 0.0 {
                 self.pad_yield_input(event_loop);
             }
-<<<<<<< HEAD
-            self.grabbed_mouse_motion(x, y);
-||||||| 46c00106def
-            // MouseHandler.onMove with the pointer grabbed; applied once per frame.
-            self.note_input(
-                input_trace::InputOrigin::User,
-                input_trace::TraceKind::Motion { x, y },
-            );
-            self.mouse.on_move(0.0, 0.0, x, y, true, true);
-            self.last_input = Instant::now();
-=======
             self.grabbed_pointer_motion([x, y]);
->>>>>>> ed6772e2118
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {

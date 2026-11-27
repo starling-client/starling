@@ -6,18 +6,14 @@
 extern crate self as sunrise_client;
 pub use sunrise_client_lib::carrier_store;
 pub use sunrise_client_lib::*;
-<<<<<<< HEAD
 #[cfg(target_os = "android")]
 pub mod android;
 // Horizon Android 0.7.8's launcher, before the game (ha_launcher/mod.rs).
-||||||| 46c00106def
-=======
 // The parity fixtures' build compiles the lib test's helpers without the tests that use most of them.
 #[cfg_attr(
     sunrise_parity_fixtures,
     allow(dead_code, unused_imports, unused_macros)
 )]
->>>>>>> ed6772e2118
 #[doc(hidden)]
 pub mod entry;
 #[cfg(target_os = "android")]

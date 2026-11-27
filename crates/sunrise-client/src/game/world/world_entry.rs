@@ -2,15 +2,11 @@
 //! resources' background load, and the world's own content tables.
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
-<<<<<<< HEAD
+use sunrise_client::items::{EntityTypeTags, LoadEntityTags};
 #[path = "world_entry/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
-||||||| 46c00106def
-=======
-use sunrise_client::items::{EntityTypeTags, LoadEntityTags};
->>>>>>> ed6772e2118
 
 static BIOME_KEYS_SESSION: AtomicU64 = AtomicU64::new(1);
 
