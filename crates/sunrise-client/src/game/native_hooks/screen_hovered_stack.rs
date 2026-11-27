@@ -15,7 +15,9 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map(|r| [r.config.width, r.config.height])?;
-        let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
+        // Starling: the batch the screens draw with (the phone's safe area and GUI scale), as
+        // screen_hovered_item.rs had it; HudBatch::new put the hit-test beside the drawn slots.
+        let batch = self.interface_batch(size);
         self.hovered_stack_at(&batch, self.cursor.0, self.cursor.1)
     }
 

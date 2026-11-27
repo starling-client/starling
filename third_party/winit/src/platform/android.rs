@@ -133,7 +133,6 @@ pub trait EventLoopBuilderExtAndroid {
     fn handle_volume_keys(&mut self) -> &mut Self;
 }
 
-<<<<<<< HEAD
 /// Sunrise's patch: an input event for the app's hook, which answers the events it took (they go
 /// no further) and `None` for the others.
 #[cfg(android_platform)]
@@ -147,9 +146,6 @@ pub fn set_input_hook(hook: InputHook) {
     crate::platform_impl::set_input_hook(hook);
 }
 
-||||||| 46c00106def
-=======
->>>>>>> ed6772e2118
 impl<T> EventLoopBuilderExtAndroid for EventLoopBuilder<T> {
     fn with_android_app(&mut self, app: AndroidApp) -> &mut Self {
         self.platform_specific.android_app = Some(app);

@@ -127,9 +127,6 @@ x11 = [
 name = "winit"
 path = "src/lib.rs"
 
-<<<<<<< HEAD
-||||||| 46c00106def
-=======
 
 
 
@@ -139,7 +136,6 @@ path = "src/lib.rs"
 
 
 
->>>>>>> ed6772e2118
 [dependencies.bitflags]
 version = "2"
 
