@@ -6,10 +6,15 @@
 use super::*;
 
 impl OptionsUi {
+    /// Sunrise Settings at Starling's Display page (`graphics_ui::Page::Display`), whose margins
+    /// the world behind it previews.
     #[cfg(target_os = "android")]
     pub fn display_open(&self) -> bool {
-        Self::graphics_page(self.page()).is_some()
-            && self.graphics.selected_page() == Some(crate::graphics_ui::Page::Display)
+        self.page() == Page::Sunrise
+            && self.sunrise.selected_page()
+                == Some(crate::sunrise_ui::Tab::Graphics(
+                    crate::graphics_ui::Page::Display,
+                ))
     }
 
     #[cfg(target_os = "android")]
@@ -19,9 +24,13 @@ impl OptionsUi {
         size: (f32, f32),
         cursor: (f32, f32),
     ) -> Option<crate::android_display::SafeZone> {
-        Self::graphics_page(self.page())?;
-        match self.graphics.preview_row(s, size, cursor)? {
-            crate::graphics_ui::Item::Display(option) => option.margin_preview(),
+        if self.page() != Page::Sunrise {
+            return None;
+        }
+        match self.sunrise.preview_row(s, size, cursor)? {
+            crate::sunrise_ui::SunriseRow::Graphics(crate::graphics_ui::Item::Display(option)) => {
+                option.margin_preview()
+            }
             _ => None,
         }
     }

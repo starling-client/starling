@@ -157,7 +157,11 @@ pub(super) struct Setup {
 }
 
 /// The unpacked skin's folder and its menus, or why they did not load.
-type SkinLoad = (std::path::PathBuf, Result<UiResources, String>);
+type SkinLoad = (
+    std::path::PathBuf,
+    Result<UiResources, String>,
+    sunrise_assets::resource_source::ResourceSource,
+);
 
 fn setup_density(width: u32, height: u32) -> f32 {
     (width as f32 / 1040.0)

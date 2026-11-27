@@ -46,11 +46,14 @@ pub enum Tab {
     Extras,
 }
 
-/// The pages, in order.
-pub const TABS: [Tab; 10] = {
+/// The pages, in order. Starling: a phone's Display page (orientation, aspect ratio, the camera
+/// cutout and safe zones) after General, as the graphics screen lists it (`Page::ALL`).
+pub const TABS: [Tab; 10 + cfg!(target_os = "android") as usize] = {
     use graphics_ui::Page as G;
     [
         Tab::Graphics(G::General),
+        #[cfg(target_os = "android")]
+        Tab::Graphics(G::Display),
         Tab::Graphics(G::Quality),
         Tab::Graphics(G::Performance),
         Tab::Graphics(G::Shaders),
