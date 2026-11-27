@@ -445,14 +445,10 @@ impl Game<'_> {
             .options
             .shortcut(&self.gui.atlas, shortcut, &mut self.clipboard)
     }
-<<<<<<< ours
     /// The wheel on the options. A finger's scroll (`finger`) only scrolls: a list moved by a
     /// finger that landed on a cycle button must not cycle it at each step, as a mouse wheel over it
     /// does (`CycleButton.mouseScrolled`).
-    pub(super) fn options_scroll(&mut self, amount: f32, finger: bool) -> Result<()> {
-=======
-    pub(super) fn options_scroll(&mut self, amount: f32) -> Result<bool> {
->>>>>>> theirs
+    pub(super) fn options_scroll(&mut self, amount: f32, finger: bool) -> Result<bool> {
         if self.pad_stick_scroll() {
             let size = self.gui_size();
             self.ui
@@ -641,12 +637,6 @@ impl Game<'_> {
                 Event::ImportButtonImage(id) => self.pick_button_image(id),
                 Event::OpenShaderOptions => self.open_shader_options(),
                 Event::ShaderOptions => self.save_shader_options(),
-<<<<<<< ours
-                Event::NativePackOptions(i) => {
-                    if let Some(pack) = self.settings.shader_packs.get(i) {
-                        pack.save_values(&Self::shader_packs_dir());
-                    }
-                }
                 Event::OpenShaderPackFolder => self.open_game_folder(&Self::shader_packs_dir()),
                 Event::ImportGpuDriver => {
                     sunrise_client::platform::pick_file();
@@ -654,12 +644,6 @@ impl Game<'_> {
                 Event::RestartGame => {
                     #[cfg(target_os = "android")]
                     crate::android::restart_app();
-=======
-                Event::OpenShaderPackFolder => {
-                    let dir = Self::shader_packs_dir();
-                    let _ = std::fs::create_dir_all(&dir);
-                    super::packs::open_folder(&dir);
->>>>>>> theirs
                 }
                 Event::NativeSettings(i) => self.native_settings_refresh(i),
                 Event::ModConfigScreen(i) => {

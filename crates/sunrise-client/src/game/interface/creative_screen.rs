@@ -275,46 +275,8 @@ impl Game<'_> {
             }
             self.draw_hovered_slot_highlight(batch, true, ox, oy);
         } else {
-<<<<<<< HEAD
-            let items = self.creative_screen.items(&self.pack.names);
-            let first = self.creative_screen.first_row(&self.pack.names);
-            let six = CREATIVE_SHIFT.get() != 0.0;
-            for r in 0..if six { 6 } else { 5 } {
-                for c in 0..9 {
-                    let Some(stack) = items.get((first + r) * 9 + c).filter(|s| s.count > 0) else {
-                        continue;
-                    };
-                    let (x, y) = (ox + 9.0 + c as f32 * 18.0, oy + 18.0 + r as f32 * 18.0);
-                    let over = hovered_slot == Some(Creative::DISPLAY + r * 9 + c);
-                    if over {
-                        self.draw_slot_highlight(batch, false, x, y);
-                    }
-                    self.draw_item(batch, stack, x, y);
-                    if over {
-                        self.draw_slot_highlight(batch, true, x, y);
-                        hovered = Some((stack.clone(), true));
-                    }
-||||||| 46c00106def
-            let items = self.creative_screen.items(&self.pack.names);
-            let first = self.creative_screen.first_row(&self.pack.names);
-            for r in 0..5 {
-                for c in 0..9 {
-                    let Some(stack) = items.get((first + r) * 9 + c).filter(|s| s.count > 0) else {
-                        continue;
-                    };
-                    let (x, y) = (ox + 9.0 + c as f32 * 18.0, oy + 18.0 + r as f32 * 18.0);
-                    let over = hovered_slot == Some(Creative::DISPLAY + r * 9 + c);
-                    if over {
-                        self.draw_slot_highlight(batch, false, x, y);
-                    }
-                    self.draw_item(batch, stack, x, y);
-                    if over {
-                        self.draw_slot_highlight(batch, true, x, y);
-                        hovered = Some((stack.clone(), true));
-                    }
-=======
             let shown = self.creative_screen.display_window(&self.pack.names);
-            for (slot, (x, y)) in Creative::display_slots() {
+            for (slot, (x, y)) in Creative::display_slots_for(self.creative_screen.shown_rows) {
                 let Some(stack) = shown.stack(slot) else {
                     continue;
                 };
@@ -327,7 +289,6 @@ impl Game<'_> {
                 if over {
                     self.draw_slot_highlight(batch, true, x, y);
                     hovered = Some((stack.clone(), true));
->>>>>>> ed6772e2118
                 }
             }
             let drag = self.drag_view();
@@ -343,16 +304,7 @@ impl Game<'_> {
                     hovered = self.inventory[c].clone().map(|s| (s, false));
                 }
             }
-<<<<<<< HEAD
-            let scrollable =
-                self.creative_screen.rows(&self.pack.names) > self.creative_screen.shown_rows;
-            let scroller = if scrollable {
-||||||| 46c00106def
-            let scrollable = self.creative_screen.rows(&self.pack.names) > 5;
-            let scroller = if scrollable {
-=======
             let scroller = if shown.can_scroll() {
->>>>>>> ed6772e2118
                 "container/creative_inventory/scroller"
             } else {
                 "container/creative_inventory/scroller_disabled"

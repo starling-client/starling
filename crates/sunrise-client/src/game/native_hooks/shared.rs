@@ -133,29 +133,16 @@ impl Game<'_> {
         let Some(id) = self.observed_overlay_now() else {
             return self.screen_view_now();
         };
-<<<<<<< HEAD
-        let renderer = self.renderer.as_ref()?;
-        let batch = self.interface_batch([renderer.config.width, renderer.config.height]);
-        Some(ScreenView::from(mod_api::__private::built::ScreenView {
-||||||| 46c00106def
-        let renderer = self.renderer.as_ref()?;
-        let batch = HudBatch::new(
-            [renderer.config.width, renderer.config.height],
-            self.settings.gui_scale_inputs(),
-        );
-        Some(ScreenView::from(mod_api::__private::built::ScreenView {
-=======
         self.renderer_framebuffer()?;
         Some(self.screen_overlay_view(id))
     }
 
     fn screen_overlay_view(&self, id: &'static str) -> ScreenView<'_> {
         let rect = self.renderer_framebuffer().map_or([0.0; 4], |framebuffer| {
-            let batch = HudBatch::new(framebuffer, self.settings.gui_scale_inputs());
+            let batch = self.interface_batch(framebuffer);
             [0.0, 0.0, batch.width, batch.height]
         });
         ScreenView::from(mod_api::__private::built::ScreenView {
->>>>>>> ed6772e2118
             id,
             mod_screen: None,
             menu: None,
@@ -1840,19 +1827,8 @@ impl Game<'_> {
         if !self.screen_hooks_open() {
             return None;
         }
-<<<<<<< HEAD
-        let renderer = self.renderer.as_ref()?;
-        let batch = self.interface_batch([renderer.config.width, renderer.config.height]);
-||||||| 46c00106def
-        let renderer = self.renderer.as_ref()?;
-        let batch = HudBatch::new(
-            [renderer.config.width, renderer.config.height],
-            self.settings.gui_scale_inputs(),
-        );
-=======
         let framebuffer = self.renderer_framebuffer()?;
-        let batch = HudBatch::new(framebuffer, self.settings.gui_scale_inputs());
->>>>>>> ed6772e2118
+        let batch = self.interface_batch(framebuffer);
         if self.screen != Screen::Playing {
             return Some(self.screen_view(&batch, self.screen));
         }

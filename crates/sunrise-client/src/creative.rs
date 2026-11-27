@@ -237,19 +237,21 @@ struct Shown {
 pub struct DisplayWindow {
     items: Arc<[ItemStack]>,
     first: usize,
+    /// The grid's rows (`Creative::shown_rows`).
+    rows: usize,
 }
 
 impl DisplayWindow {
     /// The stack display slot `slot` shows, None for an empty cell (a saved toolbar's empty
     /// slot), one past the list's end, or a slot that is not a display slot.
     pub fn stack(&self, slot: usize) -> Option<&ItemStack> {
-        let cell = Creative::display_cell(slot)?;
+        let cell = Creative::display_cell(slot).filter(|&cell| cell < self.rows * Creative::DISPLAY_COLUMNS)?;
         self.items.get(self.first + cell).filter(|s| s.count > 0)
     }
 
     /// Whether this snapshot has items beyond the visible grid.
     pub fn can_scroll(&self) -> bool {
-        Creative::has_hidden_items(self.items.len())
+        Creative::has_hidden_items(self.items.len(), self.rows)
     }
 }
 
@@ -419,7 +421,11 @@ impl Creative {
     /// and position (ItemPickerMenu's `CustomCreativeSlot(CONTAINER, i * 9 + j, 9 + j * 18,
     /// 18 + i * 18)`).
     pub fn display_slots() -> impl Iterator<Item = (usize, (f32, f32))> {
-        (0..Self::DISPLAY_CELLS).map(|cell| (Self::DISPLAY + cell, Self::display_position(cell)))
+        Self::display_slots_for(Self::DISPLAY_ROWS)
+    }
+    /// `display_slots` for a grid of `rows` (Starling's Bedrock Inventory has six).
+    pub fn display_slots_for(rows: usize) -> impl Iterator<Item = (usize, (f32, f32))> {
+        (0..rows * Self::DISPLAY_COLUMNS).map(|cell| (Self::DISPLAY + cell, Self::display_position(cell)))
     }
 
     fn display_position(cell: usize) -> (f32, f32) {
@@ -433,28 +439,15 @@ impl Creative {
     pub fn tab_slot_position(slot: usize) -> Option<(f32, f32)> {
         match slot {
             0..9 => Some((9.0 + slot as f32 * 18.0, 112.0)),
-<<<<<<< HEAD
-            _ if (Self::DISPLAY..Self::DISPLAY + 54).contains(&slot) => {
-                let i = slot - Self::DISPLAY;
-                Some((9.0 + (i % 9) as f32 * 18.0, 18.0 + (i / 9) as f32 * 18.0))
-            }
-            _ => None,
-||||||| 46c00106def
-            _ if (Self::DISPLAY..Self::DISPLAY + 45).contains(&slot) => {
-                let i = slot - Self::DISPLAY;
-                Some((9.0 + (i % 9) as f32 * 18.0, 18.0 + (i / 9) as f32 * 18.0))
-            }
-            _ => None,
-=======
             _ => Self::display_cell(slot).map(Self::display_position),
->>>>>>> ed6772e2118
         }
     }
 
     /// The grid cell of display slot `slot`, None for any other slot.
     fn display_cell(slot: usize) -> Option<usize> {
+        // Starling's Bedrock Inventory shows a sixth row (`shown_rows`).
         slot.checked_sub(Self::DISPLAY)
-            .filter(|&cell| cell < Self::DISPLAY_CELLS)
+            .filter(|&cell| cell < Self::DISPLAY_CELLS + Self::DISPLAY_COLUMNS)
     }
     /// The scrollbar track (insideScrollbar), relative to the screen origin.
     pub const SCROLL_X: f32 = 175.0;
@@ -745,7 +738,7 @@ impl Creative {
         self.project();
         if !self.select_default_if_missing() {
             // ItemPickerMenu.getScrollForRowIndex.
-            let hidden = Self::hidden_rows(self.rows(names));
+            let hidden = self.hidden_rows(self.rows(names));
             self.scroll = if hidden > 0 {
                 (row as f32 / hidden as f32).clamp(0.0, 1.0)
             } else {
@@ -1050,9 +1043,13 @@ impl Creative {
     /// visible row, resolved once for any number of slots.
     pub fn display_window(&self, names: &Names) -> DisplayWindow {
         let items = self.items(names);
-        let hidden = Self::hidden_rows(Self::rows_for(items.len()));
+        let hidden = self.hidden_rows(Self::rows_for(items.len()));
         let first = self.first_row_of(hidden) * Self::DISPLAY_COLUMNS;
-        DisplayWindow { items, first }
+        DisplayWindow {
+            items,
+            first,
+            rows: self.shown_rows,
+        }
     }
     /// `CreativeModeInventoryScreen.selectTab` for the HOTBAR tab: the nine
     /// saved rows of `HotbarManager` as the tab's items, an empty stack (count
@@ -1071,49 +1068,28 @@ impl Creative {
     pub fn rows(&self, names: &Names) -> usize {
         Self::rows_for(self.items(names).len())
     }
-<<<<<<< HEAD
-    /// ItemPickerMenu.calculateRowCount: rows beyond the ones shown.
-    fn hidden_rows(&self, names: &Names) -> i32 {
-        self.rows(names) as i32 - self.shown_rows as i32
-||||||| 46c00106def
-    /// ItemPickerMenu.calculateRowCount: rows beyond the five shown.
-    fn hidden_rows(&self, names: &Names) -> i32 {
-        self.rows(names) as i32 - 5
-=======
     fn rows_for(item_count: usize) -> usize {
         item_count.div_ceil(Self::DISPLAY_COLUMNS)
     }
-    /// ItemPickerMenu.calculateRowCount: rows beyond the display grid.
-    fn hidden_rows(row_count: usize) -> i32 {
-        row_count as i32 - Self::DISPLAY_ROWS as i32
->>>>>>> ed6772e2118
+    /// ItemPickerMenu.calculateRowCount: rows beyond the ones shown (five, or Starling's Bedrock
+    /// Inventory's six).
+    fn hidden_rows(&self, row_count: usize) -> i32 {
+        row_count as i32 - self.shown_rows as i32
     }
     /// First visible grid row for the scroll position (getRowIndexForScroll).
     pub fn first_row(&self, names: &Names) -> usize {
-        self.first_row_of(Self::hidden_rows(self.rows(names)))
+        self.first_row_of(self.hidden_rows(self.rows(names)))
     }
-<<<<<<< HEAD
-    /// CreativeModeInventoryScreen.canScroll: more rows than shown, on a tab with a scrollbar.
-||||||| 46c00106def
-    /// CreativeModeInventoryScreen.canScroll: more than five rows, on a tab with a scrollbar.
-=======
     /// `first_row` with `hidden` rows beyond the display grid.
     fn first_row_of(&self, hidden: i32) -> usize {
         ((self.scroll * hidden as f32 + 0.5) as i32).max(0) as usize
     }
-    /// CreativeModeInventoryScreen.canScroll: more items than fit, on a tab with a scrollbar.
->>>>>>> ed6772e2118
+    /// CreativeModeInventoryScreen.canScroll: more rows than shown, on a tab with a scrollbar.
     pub fn can_scroll(&self, names: &Names) -> bool {
-<<<<<<< HEAD
-        !self.tab().inventory && self.items(names).len() > self.shown_rows * 9
-||||||| 46c00106def
-        !self.tab().inventory && self.items(names).len() > 45
-=======
-        !self.tab().inventory && Self::has_hidden_items(self.items(names).len())
+        !self.tab().inventory && Self::has_hidden_items(self.items(names).len(), self.shown_rows)
     }
-    fn has_hidden_items(item_count: usize) -> bool {
-        item_count > Self::DISPLAY_CELLS
->>>>>>> ed6772e2118
+    fn has_hidden_items(item_count: usize, rows: usize) -> bool {
+        item_count > rows * Self::DISPLAY_COLUMNS
     }
     /// insideScrollbar, for a point relative to the screen origin.
     pub fn inside_scrollbar(&self, x: f32, y: f32) -> bool {
@@ -1151,7 +1127,7 @@ impl Creative {
         if !self.can_scroll(names) {
             return;
         }
-        let rows = Self::hidden_rows(self.rows(names)) as f64;
+        let rows = self.hidden_rows(self.rows(names)) as f64;
         self.scroll = (self.scroll - (amount / rows) as f32).clamp(0.0, 1.0);
     }
     /// The scroller sprite's offset from the top of the track.

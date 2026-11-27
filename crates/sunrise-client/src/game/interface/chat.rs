@@ -955,76 +955,10 @@ impl Game<'_> {
     /// Open the chat box on `initial`; `is_draft` when that text is the saved
     /// draft (`ChatComponent.createScreen`), which draws grey italic until it
     /// is edited.
-<<<<<<< HEAD
-    pub(super) fn begin_chat_screen(&mut self, initial: &str, is_draft: bool) {
-        if self.player.is_none() {
-            return;
-        }
-        self.ui.chat_draft_shown = false;
-        self.refresh_dynamic_registries();
-        let size = self
-            .renderer
-            .as_ref()
-            .map_or([1280, 720], |r| [r.config.width, r.config.height]);
-        let b = self.interface_batch(size);
-        let m = Measure(&self.gui.atlas.font);
-        let c = Commands {
-            dispatcher: chat_tree(&self.remote),
-            registries: &self.ui.registries,
-        };
-        let mut screen = ChatScreen::new(
-            &m,
-            &c,
-            initial,
-            is_draft,
-            self.ui.chat.recent.len(),
-            b.width as i32,
-            b.height as i32,
-            self.chat_abilities(),
-        );
-        screen.auto_suggestions = self.settings.auto_suggestions;
-        self.ui.chat_screen = Some(screen);
-        self.ui.chat_opened = Some(std::time::Instant::now());
-        self.set_screen(Screen::Chat);
-        self.capture(false);
-||||||| 46c00106def
-    pub(super) fn begin_chat_screen(&mut self, initial: &str, is_draft: bool) {
-        if self.player.is_none() {
-            return;
-        }
-        self.ui.chat_draft_shown = false;
-        self.refresh_dynamic_registries();
-        let size = self
-            .renderer
-            .as_ref()
-            .map_or([1280, 720], |r| [r.config.width, r.config.height]);
-        let b = HudBatch::new(size, self.settings.gui_scale_inputs());
-        let m = Measure(&self.gui.atlas.font);
-        let c = Commands {
-            dispatcher: chat_tree(&self.remote),
-            registries: &self.ui.registries,
-        };
-        let mut screen = ChatScreen::new(
-            &m,
-            &c,
-            initial,
-            is_draft,
-            self.ui.chat.recent.len(),
-            b.width as i32,
-            b.height as i32,
-            self.chat_abilities(),
-        );
-        screen.auto_suggestions = self.settings.auto_suggestions;
-        self.ui.chat_screen = Some(screen);
-        self.ui.chat_opened = Some(std::time::Instant::now());
-        self.set_screen(Screen::Chat);
-        self.capture(false);
-=======
     /// Returns false without a local player. Otherwise the ordinary screen lifecycle
     /// can open, cancel, or replace the requested screen.
     pub(super) fn begin_chat_screen(&mut self, initial: &str, is_draft: bool) -> bool {
         self.replace_chat_screen(initial, is_draft, ChatExit::Interrupted)
->>>>>>> ed6772e2118
     }
 
     fn replace_chat_screen(&mut self, initial: &str, is_draft: bool, reason: ChatExit) -> bool {
@@ -1042,7 +976,7 @@ impl Game<'_> {
                 .renderer
                 .as_ref()
                 .map_or([1280, 720], |r| [r.config.width, r.config.height]);
-            let b = HudBatch::new(size, game.settings.gui_scale_inputs());
+            let b = game.interface_batch(size);
             let m = Measure(&game.gui.atlas.font);
             let c = Commands {
                 dispatcher: chat_tree(&game.remote),
@@ -1592,19 +1526,11 @@ impl Game<'_> {
                 true
             }
             // Screen.defaultHandleGameClickEvent: the dialog opens over the
-<<<<<<< HEAD
             // screen, and closes back to it; a custom action goes back to the server.
-            Some(ClickEvent::ShowDialog(dialog)) => self.show_dialog_ref(&dialog),
-||||||| 46c00106def
-            // screen, and closes back to it.
-            Some(ClickEvent::ShowDialog(dialog)) => self.show_dialog_ref(&dialog),
-=======
-            // screen, and closes back to it.
             Some(ClickEvent::ShowDialog(dialog)) => {
                 self.show_dialog_ref(&dialog);
                 true
             }
->>>>>>> ed6772e2118
             // Screen.defaultHandleGameClickEvent: custom actions retain chat.
             // ChatScreen.handleComponentClicked: the queue row's internal id
             // shows the next held-back message; other custom ids go on.
