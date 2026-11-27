@@ -193,14 +193,15 @@ pub fn export_file(
     file_path: &std::path::Path,
 ) -> std::result::Result<String, String> {
     let meta = std::fs::symlink_metadata(file_path).map_err(|e| e.to_string())?;
-    if meta.file_type().is_symlink() || !meta.is_file() {
-        return Err("Only regular files can be exported.".into());
+    // A world is a folder: Files opens on its folder (worlds) just the same, where it is copied or shared.
+    if meta.file_type().is_symlink() || !(meta.is_file() || meta.is_dir()) {
+        return Err("Only files and folders can be exported.".into());
     }
     let file_name = file_path
         .file_name()
         .and_then(|s| s.to_str())
         .ok_or("Invalid filename")?;
-    if file_name.to_ascii_lowercase().ends_with(".png") {
+    if meta.is_file() && file_name.to_ascii_lowercase().ends_with(".png") {
         let _ = crate::ha_launcher::gallery::save(file_path);
         return Ok(format!(
             "Exporting '{file_name}' to Pictures/SunriseAndroid..."
