@@ -17,15 +17,11 @@ use std::{
 use sunrise_core::random::LegacyRandom;
 
 pub mod hooks;
-<<<<<<< HEAD
 #[path = "sound_engine/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
-||||||| 46c00106def
-=======
 pub use hooks::PreparedPlay;
->>>>>>> ed6772e2118
 
 /// `SoundSource` indices (vanilla order).
 pub const MASTER: usize = 0;

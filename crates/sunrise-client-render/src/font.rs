@@ -14,17 +14,14 @@ use crate::{
 };
 use ab_glyph::{Font as _, ScaleFont as _};
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
-<<<<<<< ours
-#[path = "font/starling.rs"]
-mod starling;
-#[allow(unused_imports)]
-pub use self::starling::*;
-=======
 use sunrise_core::random::LegacyRandom;
 
 mod formatted_lines;
 pub use formatted_lines::{FormattedLine, FormattedLines};
->>>>>>> theirs
+#[path = "font/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// `FontDescription.DEFAULT`.
 pub const DEFAULT: &str = "minecraft:default";

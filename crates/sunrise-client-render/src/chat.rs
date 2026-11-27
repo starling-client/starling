@@ -2055,29 +2055,13 @@ impl ChatScreen {
         match key {
             K::Escape => return (true, ChatAction::Close),
             K::Enter | K::NumpadEnter => {
-<<<<<<< HEAD
-                // ChatScreen.keyPressed: without `hasAllowedInput` the input
-                // stays, unsent, and the screen stays open.
-                if !self.abilities.allows(&self.input.value) {
-                    return ChatAction::None;
-                }
-                let typed = self.normalized();
-                return ChatAction::Submit(complete_command(c, &typed).unwrap_or(typed));
-||||||| 46c00106def
-                // ChatScreen.keyPressed: without `hasAllowedInput` the input
-                // stays, unsent, and the screen stays open.
-                if !self.abilities.allows(&self.input.value) {
-                    return ChatAction::None;
-                }
-                return ChatAction::Submit(self.normalized());
-=======
                 let action = if self.abilities.allows(&self.input.value) {
-                    ChatAction::Submit(self.normalized())
+                    let typed = self.normalized();
+                    ChatAction::Submit(complete_command(c, &typed).unwrap_or(typed))
                 } else {
                     ChatAction::None
                 };
                 return (true, action);
->>>>>>> ed6772e2118
             }
             K::ArrowUp => self.move_in_history(m, c, history, -1),
             K::ArrowDown => self.move_in_history(m, c, history, 1),

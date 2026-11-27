@@ -12,6 +12,10 @@ use crate::{
 pub use mod_api::client::hud_layout::{Blend, HeartKind, PoseOp};
 use std::borrow::Cow;
 use sunrise_core::random::{LegacyRandom, RandomSource};
+#[path = "hud_layout/starling.rs"]
+mod starling;
+#[allow(unused_imports)]
+pub use self::starling::*;
 
 /// One `GuiGraphicsExtractor` call.
 #[derive(Clone, Debug, PartialEq)]
@@ -282,18 +286,6 @@ pub struct HotbarInputs {
 
 /// The backgrounds and items from `Hud.extractItemHotbar`.
 pub fn hotbar(w: i32, h: i32, i: &HotbarInputs) -> Vec<GuiDraw> {
-    hotbar_with_attack_side(w, h, i, None)
-}
-
-// Adapted from Horizon Android fa548eb7abe91c194d3780e4580b9746323cd606 (MIT).
-// Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
-/// Mobile gauge placement, including space for an offhand slot on the same side.
-pub fn hotbar_with_attack_side(
-    w: i32,
-    h: i32,
-    i: &HotbarInputs,
-    attack_left: Option<bool>,
-) -> Vec<GuiDraw> {
     let mut out = Vec::new();
     let center = w / 2;
     out.push(sprite("hud/hotbar", center - 91, h - 22, 182, 22));
@@ -379,28 +371,12 @@ pub fn hotbar_attack_indicator(
 ) {
     if scale < 1.0 {
         let y = h - 20;
-<<<<<<< HEAD
-        let mut x = if attack_left.unwrap_or(!offhand_left) {
-||||||| 46c00106def
-        let x = if offhand_left {
-            center + 91 + 6
-        } else {
-=======
         let center = w / 2;
         let x = if right_handed {
             center + 91 + 6
         } else {
->>>>>>> ed6772e2118
             center - 91 - 22
-        } else {
-            center + 91 + 6
         };
-        if let Some(left) = attack_left
-            && i.offhand
-            && left == offhand_left
-        {
-            x += if left { -26 } else { 26 };
-        }
         let progress = (scale * 19.0) as i32;
         out.push(sprite(
             "hud/hotbar_attack_indicator_background",

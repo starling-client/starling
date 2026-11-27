@@ -233,13 +233,9 @@ mod hdr_start;
 mod hdr_stats;
 pub(crate) mod hud_coverage;
 mod in_flight;
-<<<<<<< HEAD
-mod terrain_source;
-||||||| 46c00106def
-=======
 mod sourced_geometry;
 mod terrain_normals;
->>>>>>> ed6772e2118
+mod terrain_source;
 use display_watch::DisplayWatch;
 #[cfg(test)]
 use display_watch::{macos_hdr, os_reported};

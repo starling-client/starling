@@ -1,13 +1,9 @@
 use super::*;
-<<<<<<< HEAD
 #[path = "batch/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
-||||||| 46c00106def
-=======
 use std::ops::Range;
->>>>>>> ed6772e2118
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

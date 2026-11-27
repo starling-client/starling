@@ -8,15 +8,11 @@ use sunrise_core::paletted::{PalettedContainer, Strategy};
 use sunrise_world::{heightmap::Heightmap, registry::BlockStateId};
 
 pub mod block_entity;
-<<<<<<< HEAD
+mod packet_heightmap;
 #[path = "chunk/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
-||||||| 46c00106def
-=======
-mod packet_heightmap;
->>>>>>> ed6772e2118
 
 /// The vanilla Overworld's column, which every dimension's chunks hold for
 /// now (`LevelShape::column`).
