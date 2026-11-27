@@ -9,21 +9,6 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// Hosts images may come from.
-const HOSTS: [&str; 8] = [
-    "https://cdn.modrinth.com/",
-    // Fabric's and Forge's own icons, for instances that play them (no published logo licence:
-    // drawn from their sites, never shipped).
-    "https://raw.githubusercontent.com/FabricMC/fabric-loader/",
-    "https://files.minecraftforge.net/static/images/",
-    "https://media.forgecdn.net/",
-    "https://edge.forgecdn.net/",
-    // Sunrise's registry's icons (its GitHub Pages), and the mirror kept at the address it had
-    // before the repositories moved to the horizon-rust organization.
-    "https://sunrise-org.github.io/sunrise-mods/",
-    "https://horizon-rust.github.io/horizon-mods/",
-    "https://ludovic111.github.io/sunrise-mods/",
-];
 /// The most an image may weigh before decoding.
 pub const MAX_DOWNLOAD: u64 = 8 << 20;
 /// The most the cache keeps on disk.
@@ -42,11 +27,9 @@ fn dir(home: &Path) -> PathBuf {
 
 /// Why `url` is never fetched.
 pub fn refuse(url: &str) -> Option<&'static str> {
-    if !HOSTS.iter().any(|h| url.starts_with(h)) {
-        return Some("not on Modrinth's or CurseForge's image servers over HTTPS");
-    }
-    if url.len() > 2048 || url.contains(char::is_whitespace) {
-        return Some("not a plain URL");
+    // Any host over HTTPS (download.rs, `https_address`): an image is only decoded, its size capped.
+    if !super::download::https_address(url) {
+        return Some("not a plain HTTPS address");
     }
     None
 }

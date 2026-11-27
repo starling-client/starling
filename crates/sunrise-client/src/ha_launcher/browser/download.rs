@@ -6,35 +6,15 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-/// Hosts a file may come from: Modrinth's and CurseForge's file servers, and the release assets
-/// of Sunrise's registry (and, see [`github_release_asset`], of the repository a registry entry
-/// names).
-const HOSTS: [&str; 5] = [
-    "https://cdn.modrinth.com/",
-    "https://edge.forgecdn.net/",
-    "https://mediafilez.forgecdn.net/",
-    sunrise_mod_package::index::FILE_HOST,
-    // The registry's files at their address before the move to horizon-rust (GitHub redirects it).
-    "https://github.com/ludovic111/sunrise-mods/releases/download/",
-];
-/// `https://github.com/<owner>/<repo>/releases/download/<tag>/<name>`: a release asset of a mod's
-/// own repository, which the registry's index lists once its release passed the registry's checks
-/// (docs/api/mod-index.md). Only the address is vouched for here; the index's SHA-256 is what
-/// pins the bytes, and [`save`] refuses any other.
-pub fn github_release_asset(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://github.com/") else {
-        return false;
-    };
-    let parts: Vec<&str> = rest.split('/').collect();
-    let plain = |p: &str| {
-        !p.is_empty()
-            && p != "."
-            && p != ".."
-            && p.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'+' | b'%'))
-    };
-    matches!(parts[..], [owner, repo, "releases", "download", tag, name]
-        if [owner, repo, tag, name].iter().all(|p| plain(p)))
+/// An address the browser fetches: HTTPS, plain (no spaces), not absurdly long. Any host: a file's
+/// bytes are pinned by the checksum its source lists (the registry's signed index, Modrinth's or
+/// CurseForge's API), which [`save`] checks, and an image is only decoded, its size capped. A
+/// source moving its files (a new host, a release tag with slashes) still downloads.
+pub fn https_address(url: &str) -> bool {
+    url.strip_prefix("https://")
+        .is_some_and(|rest| rest.contains('.') && !rest.starts_with('/'))
+        && url.len() <= 4096
+        && !url.contains(char::is_whitespace)
 }
 
 /// Bigger than any pack these sources serve (Modrinth caps uploads at 500 MiB).
@@ -64,11 +44,8 @@ pub(super) fn agent(url: &str) -> ureq::Agent {
 
 /// Why a file can't be downloaded at all, before any byte is read.
 pub fn refuse(file: &FileRef) -> Option<String> {
-    if !HOSTS.iter().any(|h| file.url.starts_with(h)) && !github_release_asset(&file.url) {
-        return Some(format!(
-            "{} isn't on Modrinth's, CurseForge's or Sunrise's file servers, or a GitHub release.",
-            file.url
-        ));
+    if !https_address(&file.url) {
+        return Some(format!("{} isn't a plain HTTPS address.", file.url));
     }
     refuse_file(file)
 }
@@ -200,4 +177,25 @@ pub fn fetch(file: &FileRef, folder: &Path, progress: &dyn Fn(f32)) -> Result<Pa
             ureq::Error::Transport(t) => format!("No connection: {t}"),
         })?;
     save(file, response.into_reader(), folder, progress)
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::https_address;
+
+    /// Any HTTPS host, a release tag with slashes among them; never plain HTTP or another scheme.
+    #[test]
+    fn any_https_address_downloads() {
+        assert!(https_address(
+            "https://github.com/EAnathos/sunrise-creatures/releases/download/vulture/v0.2.6/vulture-0.2.6.smod"
+        ));
+        assert!(https_address(
+            "https://cdn.modrinth.com/data/x/versions/y/a.jar"
+        ));
+        assert!(https_address("https://files.example.org/mods/a.smod"));
+        assert!(!https_address("http://cdn.modrinth.com/a.jar"));
+        assert!(!https_address("file:///sdcard/a.smod"));
+        assert!(!https_address("https://a b/c.smod"));
+        assert!(!https_address("https:///c.smod"));
+    }
 }
