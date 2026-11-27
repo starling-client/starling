@@ -107,7 +107,6 @@ impl ShadowView {
         self
     }
 
-    #[cfg(test)]
     #[inline]
     pub(crate) fn with_depth_planes(mut self, depth_planes: bool) -> Self {
         self.depth_planes = depth_planes;

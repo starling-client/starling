@@ -122,6 +122,20 @@ pub(crate) fn supports_texture_usage(
 }
 
 #[cfg(test)]
+/// Naga's GLSL writer cannot lower depth textureLoad (no downlevel flag describes it).
+pub(crate) fn supports_depth_load(adapter: &wgpu::Adapter) -> bool {
+    let info = adapter.get_info();
+    if info.backend != wgpu::Backend::Gl {
+        return true;
+    }
+    eprintln!(
+        "skipped: {} / {:?} lacks depth textureLoad in GLSL",
+        info.name, info.backend
+    );
+    false
+}
+
+#[cfg(test)]
 /// Once capabilities are checked, device errors must fail rather than skip.
 pub(crate) fn device(adapter: &wgpu::Adapter) -> (wgpu::Device, wgpu::Queue) {
     pollster::block_on(adapter.request_device(&Default::default()))

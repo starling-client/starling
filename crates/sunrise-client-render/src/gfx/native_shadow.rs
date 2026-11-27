@@ -192,14 +192,24 @@ pub fn camera(settings: &Settings) -> Shadow {
     }
 }
 
+/// The largest shadow map side this device makes, of `device_max`: at most 4096 on a phone, as a
+/// `shaders/` pack's (`sunrise_render_shaderpack::pack_shadow::shadow_side_limit`, private to its
+/// crate). Adapted from Vasysik/sunrise-android (`max_shadow`), MIT, copyright (c) 2026 Ludovic
+/// Marie and the Horizon contributors.
+fn shadow_side_limit(device_max: u32) -> u32 {
+    if cfg!(target_os = "android") {
+        device_max.min(4096)
+    } else {
+        device_max
+    }
+}
+
 /// `settings` with the resolution `device` can make.
 pub fn fitted(device: &wgpu::Device, settings: &Settings) -> Settings {
     Settings {
-        resolution: settings.resolution.min(
-            sunrise_render_shaderpack::pack_shadow::shadow_side_limit(
-                device.limits().max_texture_dimension_2d,
-            ),
-        ),
+        resolution: settings
+            .resolution
+            .min(shadow_side_limit(device.limits().max_texture_dimension_2d)),
         ..settings.clone()
     }
 }

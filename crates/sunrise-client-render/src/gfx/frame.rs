@@ -56,6 +56,7 @@ pub(super) struct Globals {
 pub(super) struct MeshFacts<'a> {
     pub(super) visibility: u64,
     pub(super) block_entities: &'a [([i32; 3], u32)],
+    pub(super) lights: &'a [([i32; 3], u32)],
     pub(super) bounds: Option<[glam::Vec3; 2]>,
     /// It has translucent quads.
     pub(super) translucent: bool,
@@ -67,6 +68,7 @@ impl<'a> MeshFacts<'a> {
         Self {
             visibility: mesh.visibility,
             block_entities: &mesh.block_entities,
+            lights: &mesh.lights,
             bounds: mesh.bounds,
             translucent: !mesh.translucent.is_empty(),
             empty: mesh.solid.is_empty() && mesh.translucent.is_empty(),

@@ -264,8 +264,8 @@ fn kind_of(kind: &index::Kind) -> Option<Kind> {
         index::Kind::Mod => Some(Kind::Mod),
         index::Kind::ResourcePack => Some(Kind::ResourcePack),
         index::Kind::Modpack => Some(Kind::Modpack),
-        // Into shaderpacks/: shaders/-folder zips (Sunrise removed its own `.sshader` format).
-        index::Kind::ShaderPack => Some(Kind::Shader),
+        // Both go in shaderpacks/: the game reads `.sshader` packs and shaders/-folder zips.
+        index::Kind::Shader | index::Kind::ShaderPack => Some(Kind::Shader),
         // Mixin mods: installed beside the others, compiled into the game by `native_mods`.
         index::Kind::NativeMod => Some(Kind::Mod),
         // Into a world the player picks ([`installed::install_datapack`]).

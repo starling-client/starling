@@ -1009,6 +1009,7 @@ impl Renderer {
             &lightmap_view,
             &lightmap_sampler,
             &emission_stats.view,
+            emissive_view,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);

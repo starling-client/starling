@@ -451,6 +451,22 @@ impl Renderer {
             self.native = None;
             return Ok(Vec::new());
         };
+        // Hardware ray tracing needs a ray-query device: refuse the pack with its name
+        // rather than failing its pipelines' TLAS binding.
+        if report.manifest.ray_tracing.is_some() && !self.ray_tracing() {
+            return Err(format!(
+                "{} needs a ray-tracing GPU (Advanced graphics' Ray Tracing): \
+                 this device offers no ray queries",
+                report.manifest.name
+            ));
+        }
+        // The TLAS the pack's bind groups share: created empty here, filled as sections
+        // build BLASes. The object is stable, so the groups stay valid across rebuilds.
+        let tlas = report
+            .manifest
+            .ray_tracing
+            .as_ref()
+            .map(|_| self.rt.ensure_tlas(&self.device).clone());
         let terrain = native_material::TerrainShape {
             globals: &self.terrain_layout,
             flat: self.flat.as_ref().map(|f| &f.draw_layout),
@@ -470,10 +486,12 @@ impl Renderer {
             report,
             &constants,
             lights,
+            tlas.as_ref(),
         )?;
         self.native = pack.draws().then_some(pack);
         if self.native.is_some() {
             self.pack_post = None;
+            self.pack_loading = None;
             self.pack_atlas = None;
             self.pack_material_atlases = None;
         }
