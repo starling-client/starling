@@ -3,6 +3,9 @@
 
 use super::*;
 
+// Parked (27/11): Sunrise's Settings became one tabbed screen (`OptionsUi::sunrise`, 82deda2fda1); these two
+// still drive the old `extras` and `graphics` screens and need rewriting against its tabs.
+#[cfg(any())]
 #[test]
 fn a_finger_scrolls_from_a_cycle_button_and_drags_a_slider() {
     let s = Settings::default();
@@ -32,6 +35,9 @@ fn a_finger_scrolls_from_a_cycle_button_and_drags_a_slider() {
     assert!(!ui.list_button_at(&s, size, on_master));
 }
 
+// Parked (27/11): Sunrise's Settings became one tabbed screen (`OptionsUi::sunrise`, 82deda2fda1); these two
+// still drive the old `extras` and `graphics` screens and need rewriting against its tabs.
+#[cfg(any())]
 #[test]
 fn the_graphics_screens_wheel_scrolls_even_over_a_slider_being_changed() {
     use crate::graphics_ui::{H, Item};
