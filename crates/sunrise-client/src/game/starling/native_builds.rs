@@ -972,8 +972,9 @@ fn native_libs_current(wanted: &BTreeSet<String>, request: Option<&str>) -> bool
 }
 
 /// The native mods on changed: [`NATIVE_LIBS`] made again from the libraries already downloaded,
-/// when every mod on has one; with none on, an empty record, so none opens. Else the Mods page
-/// offers Compile.
+/// for the mods on that have one; with none on, an empty record, so none opens. A mod on without
+/// one is left out, and the Mods page offers Compile for it: keeping the last set instead kept a
+/// mod turned off or deleted running.
 fn native_libs_follow() {
     if !loads_store_builds() || own_build().is_none() || !native_libs().exists() {
         return;
@@ -1001,11 +1002,58 @@ fn native_libs_follow() {
                 libraries.push(library)
             }
             // One the phone doesn't have: Compile fetches it.
-            _ => return,
+            _ => {}
         }
     }
     if let Err(e) = put_native_libs(&libraries, &wanted) {
         log::warn!("Sunrise: the native mod libraries were not made again: {e}");
+    }
+}
+
+/// The ids of the native mods in the folder that are on, from their manifests alone: a start reads
+/// them (`native_libs_at_start`). A package Sunrise's reader refuses (Starling's own format) is
+/// read whole, as Compile reads it.
+fn folder_ids_on(off: &BTreeSet<String>) -> BTreeSet<String> {
+    let folder = Game::game_dir().join(sunrise_client::mod_list::NATIVE_DIR);
+    std::fs::read_dir(&folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| native_file(p))
+        .filter_map(|p| match sunrise_mod_package::Package::read(&p) {
+            Ok(package) => package.is_native().then(|| package.manifest.id.clone()),
+            Err(_) => sunrise_mod_package::index::native::Bundle::read(&p)
+                .ok()
+                .map(|bundle| bundle.manifest.id.clone()),
+        })
+        .filter(|id| !off.contains(id))
+        .collect()
+}
+
+/// At the start, before the game opens [`NATIVE_LIBS`] (sunrise-android's `native_libraries`):
+/// made again when it holds a mod that is no longer in the folder or is off there. Only the Mods
+/// page's switch made it again before, so a player who deleted a native mod (the launcher's
+/// Installed page, a file manager) went on playing it until they cleared the app's data.
+pub(crate) fn native_libs_at_start() {
+    let Some(opens) = native_libs_mods() else {
+        return;
+    };
+    let off = sunrise_client::mod_list::ModList::load(&Game::game_dir()).disabled;
+    let on = folder_ids_on(&off);
+    if opens.is_subset(&on) {
+        return;
+    }
+    let gone: BTreeSet<String> = opens.difference(&on).cloned().collect();
+    log::info!(
+        "Starling: native mod libraries made again without {}: no longer in the folder, or off",
+        listed(&gone)
+    );
+    native_libs_follow();
+    // What the follow could not make again (old bundles alone play from a whole-game build): none
+    // opens, rather than a mod the player removed.
+    if native_libs_mods().is_some_and(|opens| !opens.is_subset(&on)) {
+        let _ = std::fs::remove_dir_all(native_libs());
     }
 }
 

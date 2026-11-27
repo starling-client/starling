@@ -89,6 +89,8 @@ fn native_libraries() -> (
     let Some(private) = std::env::var_os("SUNRISE_PRIVATE") else {
         return Default::default();
     };
+    // Starling: a mod deleted or turned off since they were made stays shut.
+    sunrise_client::android::follow_native_libs();
     let folder = std::path::PathBuf::from(private).join(NATIVE_LIBRARIES);
     if !folder.join("native-mods.json").is_file() {
         return Default::default();

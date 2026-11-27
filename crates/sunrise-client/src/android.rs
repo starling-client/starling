@@ -35,6 +35,12 @@ pub fn set_native_libs_opened(ids: Vec<&'static str>) {
     let _ = NATIVE_LIBS_OPENED.set(ids);
 }
 
+/// Before sunrise-android opens the native mod libraries (`native-libs`): they follow the native
+/// mods folder, so a mod deleted or turned off since they were made doesn't open.
+pub fn follow_native_libs() {
+    crate::game::native_libs_at_start();
+}
+
 /// The native mods this start opened from their own libraries, none before or without them.
 pub fn native_libs_opened() -> &'static [&'static str] {
     NATIVE_LIBS_OPENED.get().map_or(&[], Vec::as_slice)

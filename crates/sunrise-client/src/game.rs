@@ -1424,6 +1424,9 @@ mod mobile_controls;
 mod mod_catalog;
 #[path = "game/starling/native_builds.rs"]
 mod native_builds;
+// Starling: the libraries the start opens follow the native mods folder (sunrise-android).
+#[cfg(target_os = "android")]
+pub(crate) use native_builds::native_libs_at_start;
 #[path = "game/modding/native_hotbar_slot.rs"]
 mod native_hotbar_slot;
 #[cfg(test)]
