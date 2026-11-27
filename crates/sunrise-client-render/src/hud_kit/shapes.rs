@@ -206,7 +206,8 @@ impl HudBatch {
     }
 
     /// Moves every vertex added since `start` by `(dx, dy)` GUI px.
-    pub(crate) fn translate_since(&mut self, start: usize, dx: f32, dy: f32) {
+    // Starling: public, for the phone controls drawn between the safe-area strips.
+    pub fn translate_since(&mut self, start: usize, dx: f32, dy: f32) {
         if dx == 0.0 && dy == 0.0 {
             return;
         }

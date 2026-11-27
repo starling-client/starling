@@ -29,7 +29,7 @@ pub(super) fn on_by_default(name: &str) -> bool {
     !name.to_ascii_lowercase().contains("mali")
 }
 
-pub(super) struct LateSky {
+pub(crate) struct LateSky {
     pub sky: wgpu::RenderPipeline,
     pub sunrise: wgpu::RenderPipeline,
     pub celestial: wgpu::RenderPipeline,

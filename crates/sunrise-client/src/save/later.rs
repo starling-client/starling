@@ -75,7 +75,7 @@ pub(super) fn queue(path: &Path, job: Job) {
             .spawn(move || {
                 for (seq, path, job) in receive {
                     let written = match job {
-                        Job::Dat(tag) => super::write_dat_now(&path, tag),
+                        Job::Dat(tag) => super::level_dat::write_dat_now(&path, tag),
                         Job::Bytes(bytes) => super::write_file_now(&path, &bytes),
                     };
                     if let Err(e) = written {
@@ -97,7 +97,7 @@ pub(super) fn queue(path: &Path, job: Job) {
             drop(counts);
             // No writer thread: write it now.
             let _ = match job {
-                Job::Dat(tag) => super::write_dat_now(path, tag),
+                Job::Dat(tag) => super::level_dat::write_dat_now(path, tag),
                 Job::Bytes(bytes) => super::write_file_now(path, &bytes),
             };
             if let Ok(mut pending) = q.pending.lock() {

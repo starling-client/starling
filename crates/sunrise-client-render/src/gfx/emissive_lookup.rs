@@ -9,7 +9,7 @@ const EXTENT: wgpu::Extent3d = wgpu::Extent3d {
     depth_or_array_layers: 1,
 };
 
-pub(super) struct Lookup {
+pub(crate) struct Lookup {
     texture: wgpu::Texture,
     pub(super) view: wgpu::TextureView,
     pairs: Vec<[u32; 4]>,

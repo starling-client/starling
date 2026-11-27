@@ -1135,6 +1135,9 @@ impl PackLoading {
     /// terrain or translucent shadow program built with it) and `draws_sections` (a solid,
     /// cutout or translucent terrain program, or that shadow pass). A program the device then
     /// refuses to build is not foreseen: the layouts follow the built pack once it runs.
+    // Starling translates a pack on its build thread (`load_shader_pack`): what it draws is known
+    // only once it is built, and the layouts follow it then.
+    #[allow(dead_code)]
     pub(crate) fn draws_of(post: &sunrise_shaders::Post, atlas: bool) -> PackDraws {
         let shadow = atlas
             && post.shadow_pass

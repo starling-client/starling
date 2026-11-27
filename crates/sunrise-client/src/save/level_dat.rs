@@ -128,7 +128,7 @@ pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
     later::flush();
     write_dat_now(path, tag)
 }
-fn write_dat_now(path: &Path, tag: Tag) -> Result<()> {
+pub(super) fn write_dat_now(path: &Path, tag: Tag) -> Result<()> {
     write_dat_as(path, tag, false)
 }
 

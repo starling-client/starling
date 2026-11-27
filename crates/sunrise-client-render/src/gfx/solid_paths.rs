@@ -87,7 +87,7 @@ impl FramePasses<'_> {
     }
 }
 
-pub(super) struct SolidPaths {
+pub(crate) struct SolidPaths {
     /// The cutout pass without `faded` (terrain.wgsl's `fs_cutout_static`): 21.770/22.101 ms of
     /// GPU time against 20.988/21.247 ms in the fork's measurement, in a tablet's 16-chunk scene.
     static_cutout: Pass,
