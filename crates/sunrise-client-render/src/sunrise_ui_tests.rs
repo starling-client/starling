@@ -287,7 +287,15 @@ fn the_keys_and_a_controller_go_from_the_search_field_to_gameplays_first_row() {
 }
 
 fn pack(file: &str) -> crate::shader_pack_list::Entry {
-    crate::shader_pack_list::Entry { file: file.into() }
+    crate::shader_pack_list::Entry {
+        file: file.into(),
+        key: file.into(),
+        title: file.into(),
+        kind: crate::shader_pack_list::Kind::Classic,
+        options: Vec::new(),
+        values: Vec::new(),
+        pages: Vec::new(),
+    }
 }
 
 fn undo_shows(shell: &mut Shell<SunriseScreen>, s: &Settings) -> bool {

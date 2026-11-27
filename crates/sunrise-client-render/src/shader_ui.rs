@@ -1119,7 +1119,6 @@ mod tests {
         assert_eq!(slider(Item::Option(2), &s), Some(0.0));
     }
 
-    #[test]
     /// A Sunrise pack picked, with a float option from 0 to 1 in steps of 0.1 at 0.5.
     fn sunrise_pack() -> Settings {
         let mut pack = entry("H", Kind::Sunrise);

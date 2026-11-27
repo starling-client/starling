@@ -383,7 +383,7 @@ fn pack_async(
 ) -> bool {
     let post = post(renderer, folder, probe);
     let started = std::time::Instant::now();
-    renderer.load_shader_pack(0, post, ids.to_vec(), "ids".into(), started);
+    renderer.load_shader_pack(0, move || post, ids.to_vec(), "ids".into(), started);
     renderer.upload(SECTION, &mesh());
     let frame = folder.join("loading.png");
     let report = loop {
@@ -789,6 +789,8 @@ fn run_daily(test: &str, env: &[(&str, &str)], fixture: Fixture) {
 fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
     let eye = glam::DVec3::from_array(EYE);
     Frame {
+        menu_blur_cache: false,
+        water_plane: None,
         weather: &[],
         weather_time: client::weather::Time::new(0, 0.0),
         camera: eye,

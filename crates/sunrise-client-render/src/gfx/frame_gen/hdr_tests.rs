@@ -129,7 +129,7 @@ impl Run {
         let atlas = of::upload(&device, &queue, [1, 1], &[0; 4]);
         fg.track_entities(&device, &atlas, &[], &[], glam::DVec3::ZERO);
         Some(Self {
-            post: Post::new(&device, FLOAT),
+            post: Post::new(&device, FLOAT, ""),
             fg,
             camera: Camera {
                 jittered: Mat4::IDENTITY,

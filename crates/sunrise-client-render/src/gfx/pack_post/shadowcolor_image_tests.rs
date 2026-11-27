@@ -527,7 +527,7 @@ fn build_terrain(gpu: &Fixture, post: Post) -> PackPost {
     gpu.build_with_terrain(
         post,
         Some(Geometry {
-            prepass: None,
+            prepass: false,
             material_maps: false,
             buffers: &layouts,
             table: None,

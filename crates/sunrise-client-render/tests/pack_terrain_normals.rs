@@ -733,7 +733,7 @@ fn fixture_pending(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::e
     let post = read_pack(&mut renderer, &folder);
     renderer.load_shader_pack(
         0,
-        post,
+        move || post,
         Vec::new(),
         "normal".into(),
         std::time::Instant::now(),
@@ -794,7 +794,7 @@ fn fixture_pending_packed(
     let post = read_pack(&mut renderer, &folder);
     renderer.load_shader_pack(
         0,
-        post,
+        move || post,
         Vec::new(),
         "normal".into(),
         std::time::Instant::now(),
@@ -843,7 +843,7 @@ fn fixture_pending_post_only(
     assert!(post.terrain.is_none() && post.shadow.is_none());
     renderer.load_shader_pack(
         0,
-        post,
+        move || post,
         Vec::new(),
         "composite".into(),
         std::time::Instant::now(),
@@ -900,7 +900,7 @@ fn fixture_water_only(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std
     );
     renderer.load_shader_pack(
         0,
-        post,
+        move || post,
         Vec::new(),
         "water".into(),
         std::time::Instant::now(),
@@ -950,7 +950,7 @@ fn fixture_pending_refused(
     let post = read_pack(&mut renderer, &folder);
     renderer.load_shader_pack(
         0,
-        post,
+        move || post,
         Vec::new(),
         "refused".into(),
         std::time::Instant::now(),
@@ -1211,6 +1211,7 @@ fn run_daily(test: &str, env: &[(&str, &str)], fixture: Fixture) {
 fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
     let eye = glam::DVec3::from_array(EYE);
     Frame {
+        menu_blur_cache: false,
         weather: &[],
         weather_time: client::weather::Time::new(0, 0.0),
         camera: eye,

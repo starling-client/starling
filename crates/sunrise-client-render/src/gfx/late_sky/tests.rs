@@ -221,7 +221,7 @@ fn the_late_sky_draws_the_usual_pixels() {
         },
         &layout,
         (&sunrise_buffers, sunrise_blend),
-        &celestial,
+        Some(device.create_render_pipeline(&celestial)),
         &stars,
     )
     .expect("the test GPU takes these pipelines");

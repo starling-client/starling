@@ -218,7 +218,7 @@ mod tests {
             t.skin.as_deref(),
             Some("http://ely.by/storage/skins/69c6740d2993e5d6f6a7fc92420efc29.png")
         );
-        assert!(!t.slim && !t.signed && t.cape.is_none());
+        assert!(!t.slim && t.signature == crate::skins::Signature::Unsigned && t.cape.is_none());
         let slim = r#"{"SKIN":{"url":"http://ely.by/storage/skins/a.png","metadata":{"model":"slim"}},"CAPE":{"url":"http://ely.by/storage/cloaks/b.png"}}"#;
         let t = parse(slim).unwrap();
         assert!(t.slim);

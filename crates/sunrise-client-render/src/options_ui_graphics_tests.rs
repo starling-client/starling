@@ -101,6 +101,12 @@ fn the_shaders_page_lists_the_packs_and_opens_the_picks_settings() {
     let mut s = Settings {
         shader_packs: vec![Entry {
             file: "Pack.zip".into(),
+            key: "Pack.zip".into(),
+            title: "Pack.zip".into(),
+            kind: crate::shader_pack_list::Kind::Classic,
+            options: Vec::new(),
+            values: Vec::new(),
+            pages: Vec::new(),
         }],
         ..Settings::default()
     };

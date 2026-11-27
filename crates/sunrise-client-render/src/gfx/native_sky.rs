@@ -237,6 +237,7 @@ mod tests {
             Default::default(),
             None,
             (sunrise_shader_api::Api::V0_1, false),
+            None,
         )
     }
 

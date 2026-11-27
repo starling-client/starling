@@ -7523,6 +7523,7 @@ mod tests {
                     key: "trails".into(),
                     label: "Trails".into(),
                     tooltip: None,
+                    category: None,
                     value: crate::mod_list::NativeSettingValue::Toggle(true),
                 }],
                 ..Default::default()
@@ -9515,6 +9516,12 @@ mod tests {
         // its pages.
         s.shader_packs = vec![crate::shader_pack_list::Entry {
             file: "A.zip".into(),
+            key: "A.zip".into(),
+            title: "A.zip".into(),
+            kind: crate::shader_pack_list::Kind::Classic,
+            options: Vec::new(),
+            values: Vec::new(),
+            pages: Vec::new(),
         }];
         s.sunrise.shader_pack = "A.zip".into();
         s.shader_options = Some(crate::shader_options::ShaderOptions::new(

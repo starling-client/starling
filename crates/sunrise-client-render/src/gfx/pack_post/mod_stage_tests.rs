@@ -91,7 +91,7 @@ fn render_stage_quads(inside_pack: bool, quads: &[Vertex]) -> Option<[[u8; 3]; 3
             material_maps: None,
             lightmap: color.clone(),
             terrain: Some(Geometry {
-                prepass: None,
+                prepass: false,
                 buffers: &layouts,
                 table: None,
                 depth_write: true,
@@ -400,7 +400,7 @@ fn pack_boundaries_fire_in_order_and_draw_pack_custom_depth_tests_mod_pipelines(
             material_maps: None,
             lightmap: color.clone(),
             terrain: Some(Geometry {
-                prepass: None,
+                prepass: false,
                 buffers: &layouts,
                 table: None,
                 depth_write: true,
@@ -727,7 +727,7 @@ fn pack_composite_inverts_mod_glsl_quad_drawn_once_after_opaque_blocks() {
             material_maps: None,
             lightmap: color.clone(),
             terrain: Some(Geometry {
-                prepass: None,
+                prepass: false,
                 buffers: &layouts,
                 table: None,
                 depth_write: true,

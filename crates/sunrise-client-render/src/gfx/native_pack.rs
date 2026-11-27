@@ -416,6 +416,7 @@ file = \"material.wgsl\"
             report,
             &[],
             Default::default(),
+            None,
         );
         assert!(built.is_err(), "the pack should be refused");
     }
