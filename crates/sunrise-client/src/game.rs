@@ -1412,16 +1412,24 @@ mod build_mining;
 mod creative_shift;
 #[path = "game/starling/diagnostics.rs"]
 mod diagnostics;
+// Starling: Android only (its fields of `Game` are).
+#[cfg(target_os = "android")]
 #[path = "game/starling/files_offer.rs"]
 mod files_offer;
 #[path = "game/starling/imports.rs"]
 mod imports;
 #[path = "game/starling/input_mode.rs"]
 mod input_mode;
+// Starling: Android only (its fields of `Game` are).
+#[cfg(target_os = "android")]
 #[path = "game/starling/mobile_controls/mod.rs"]
 mod mobile_controls;
+// Starling: Android only (its fields of `Game` are).
+#[cfg(target_os = "android")]
 #[path = "game/starling/mod_catalog.rs"]
 mod mod_catalog;
+// Starling: Android only (its fields of `Game` are).
+#[cfg(target_os = "android")]
 #[path = "game/starling/native_builds.rs"]
 mod native_builds;
 // Starling: the libraries the start opens follow the native mods folder (sunrise-android).
@@ -2465,6 +2473,8 @@ mod ui_control;
 #[cfg(test)]
 #[path = "game/runtime/ui_core_shader_tests.rs"]
 mod ui_core_shader_tests;
+// Starling: Android only (its fields of `Game` are).
+#[cfg(target_os = "android")]
 #[path = "game/starling/update_offer.rs"]
 mod update_offer;
 #[path = "game/interface/upload_pace.rs"]
