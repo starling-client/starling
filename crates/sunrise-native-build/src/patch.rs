@@ -379,12 +379,15 @@ pub fn prepare<'a>(
     mixins: &MixinsIdentity,
     check_only: bool,
 ) -> Result<Option<Prepared<'a>>, String> {
-    prepare_with(rust, game, None, out, projects, sdk, mixins, None)
+    prepare_with(
+        rust, game, None, out, projects, sdk, mixins, None, check_only,
+    )
 }
 
 /// [`prepare`] with the game's source at `source` instead of the pinned archive, and the tool
 /// planning against `target`'s cfg instead of this computer's: Starling's Android store builds a
 /// mod against the staged game it holds (tools/android_native_sdk.py), offline, for the phone.
+/// `check_only` as for [`prepare`].
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_with<'a>(
     rust: &dyn Toolchain,
@@ -395,6 +398,7 @@ pub fn prepare_with<'a>(
     sdk: &Identity,
     mixins: &MixinsIdentity,
     target: Option<&str>,
+    check_only: bool,
 ) -> Result<Option<Prepared<'a>>, String> {
     let bundles: Vec<&Bundle> = projects
         .iter()
@@ -458,8 +462,9 @@ pub fn prepare_with<'a>(
         Some(recorded) => recorded.clone(),
         // A check only types the mods against the SDK, so an SDK that predates the lower
         // crates' records takes the pinned compiler's cfg for each of them, as `build` does
-        // through the SDK's own tool.
-        None if check_only => {
+        // through the SDK's own tool. Starling's Android store (a `target`) plans against that
+        // target's printed cfg the same way: its SDK identity carries no records.
+        None if check_only || target.is_some() => {
             let atoms = printed_cfg(rust, sdk, target)?;
             index
                 .crates

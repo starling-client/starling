@@ -145,6 +145,7 @@ fn main() {
         &sdk,
         &mixins,
         Some(target),
+        false,
     )
     .unwrap_or_else(|e| fail(e));
     let json = match prepared {
