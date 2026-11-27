@@ -676,7 +676,12 @@ fn printed_cfg(
 ) -> Result<Vec<String>, String> {
     let mut print = super::prebuilt::rustc_with(rust, &[], "2024");
     game_cfg(&mut print, sdk);
-    print.args(["--print", "cfg", "--target", target.unwrap_or(rust.target())]);
+    print.args([
+        "--print",
+        "cfg",
+        "--target",
+        target.unwrap_or(rust.target()),
+    ]);
     let printed = print.output().map_err(|e| e.to_string())?;
     if !printed.status.success() {
         return Err(String::from_utf8_lossy(&printed.stderr).into_owned());

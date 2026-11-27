@@ -442,18 +442,19 @@ pub(super) fn spawn_loader(
         let progress = progress.clone();
         let sender = sender.clone();
         let vanilla = vanilla_root.clone();
+        let atlas_limit = max_atlas_size.clone();
         let menu_sent = std::sync::atomic::AtomicBool::new(false);
         mod_sources.note = Some(std::sync::Arc::new(move |line: Option<String>| {
             let first =
                 line.is_some() && !menu_sent.swap(true, std::sync::atomic::Ordering::Relaxed);
             progress.note(line);
-            if first
-                && let Ok(ui) = UiResources::load(
-                    &sunrise_assets::resource_source::ResourceSource::directory(vanilla.clone()),
-                    &vanilla,
-                )
-            {
-                let _ = sender.send(LoaderMsg::Ui(ui, vanilla.clone()));
+            if first {
+                let source =
+                    sunrise_assets::resource_source::ResourceSource::directory(vanilla.clone());
+                let limit = atlas_limit.load(std::sync::atomic::Ordering::Relaxed);
+                if let Ok(ui) = UiResources::load_with_limit(&source, &vanilla, limit) {
+                    let _ = sender.send(LoaderMsg::Ui(ui, vanilla.clone(), source));
+                }
             }
         }));
     }

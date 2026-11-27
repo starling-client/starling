@@ -61,7 +61,7 @@ pub(super) fn build_renderer(
         shader_pack,
         display,
     )
-    .build(device)?;
+    .build(device, Some(&gui.atlas))?;
     let required = finish_renderer(
         &mut renderer,
         pack,

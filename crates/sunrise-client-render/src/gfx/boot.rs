@@ -107,7 +107,12 @@ impl Drawing {
         Ok(Self {
             hud,
             panorama: panorama::Panorama::new(device, format, faces, gl),
-            textures: [atlas_texture, glint_texture, glint_armor_texture, lightmap_texture],
+            textures: [
+                atlas_texture,
+                glint_texture,
+                glint_armor_texture,
+                lightmap_texture,
+            ],
         })
     }
 }

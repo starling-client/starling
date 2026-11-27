@@ -652,7 +652,10 @@ impl StockLayerDraw for StockDraw<'_, '_> {
                         self.chest(),
                         self.ctx.camera,
                         partial,
-                        self.ctx.light,
+                        (
+                            &*self.game as &dyn sunrise_client::mobs::render::RenderDataSource,
+                            self.ctx.light,
+                        ),
                         self.out,
                     );
                 }

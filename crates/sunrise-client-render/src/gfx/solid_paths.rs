@@ -73,7 +73,7 @@ impl Pass {
 
 /// What a frame's solid passes draw through in place of the usual pipelines.
 #[derive(Clone, Copy, Default)]
-pub(super) struct FramePasses<'a> {
+pub(crate) struct FramePasses<'a> {
     opaque: Option<&'a Pass>,
     cutout: Option<&'a Pass>,
 }

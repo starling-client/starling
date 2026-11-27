@@ -23,7 +23,7 @@ pub(in crate::gfx) fn mali_vulkan(info: &wgpu::AdapterInfo) -> bool {
 
 /// What these paths' pipelines of terrain.wgsl share. Unlike `Renderer::new`'s own, they may fail:
 /// the frame then keeps the usual pipeline.
-pub(super) struct TerrainModule<'a> {
+pub(crate) struct TerrainModule<'a> {
     pub kept: &'a super::reuse::On<'a>,
     pub shader: &'a wgpu::ShaderModule,
     pub format: wgpu::TextureFormat,

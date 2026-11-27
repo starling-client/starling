@@ -2,7 +2,7 @@
 //! field through the same sinks the keyboard and `sunrise-ctl type` use.
 //! The window only asks the OS for an input method while such a field has
 //! focus, so movement keys keep arriving as plain key events.
-use super::{Game, Screen, screen_build::ObservedScreen};
+use super::{Game, Screen, books::BookScreen, screen_build::ObservedScreen};
 use sunrise_client::{
     hud::HudBatch,
     preedit::{self, PreeditEvent},

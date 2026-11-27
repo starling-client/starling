@@ -337,13 +337,17 @@ impl Game<'_> {
             Download::Failed => return Worn::Default,
             Download::Ready => {}
         }
-        let location = {
+        let lookup = {
             let mut downloads = self.skin_downloads.borrow_mut();
             sunrise_client::skins::lookup(textures, false, |kind, url| downloads.state(kind, url))
         };
         // The title screen has nothing else to put a download in the atlas: without this the skin
         // only came once a world had stored it.
         self.store_ready_skins();
+        let location = match lookup {
+            sunrise_client::skins::SkinLookup::Ready(skin) => skin.custom_body.map(|(at, _)| at),
+            _ => None,
+        };
         let Some(location) = location else {
             return Worn::Default;
         };

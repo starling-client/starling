@@ -1088,7 +1088,8 @@ impl Renderer {
     /// meanwhile keep the layout it will draw in rather than drop the sections for the frames
     /// without it and again once it runs.
     pub(super) fn pack_pending(&self) -> Option<PackDraws> {
-        self.pack_loading.as_ref().map(|l| l.draws)
+        // Starling: what the pack draws once its build thread has translated it.
+        (self.pack_loading.as_ref()).map(|l| l.draws.get().copied().unwrap_or_default())
     }
     /// Whether a `shaders/` pack, running or being built (`pack_pending`), has programs that
     /// draw the game's sections (`PackPost::draws_sections`): a pack with none, one of

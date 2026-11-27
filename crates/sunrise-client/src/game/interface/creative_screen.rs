@@ -292,6 +292,8 @@ impl Game<'_> {
                 }
             }
             let drag = self.drag_view();
+            // Starling: Bedrock Inventory's sixth row takes the hotbar's place.
+            let six = CREATIVE_SHIFT.get() != 0.0;
             for c in 0..if six { 0 } else { 9 } {
                 let (x, y) = (ox + 9.0 + c as f32 * 18.0, oy + 112.0);
                 let over = hovered_slot == Some(c);

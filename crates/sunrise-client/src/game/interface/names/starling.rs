@@ -23,13 +23,15 @@ impl Game<'_> {
                 continue;
             }
             // EntityAttachment.NAME_TAG: the entity's height, then 0.5 up.
-            let at = if let Some(t) = r.entities.get(&(id as i32))
-                && t.kind != "minecraft:text_display"
-            {
-                glam::DVec3::new(t.position[0], t.position[1] + 0.5, t.position[2])
-            } else {
+            let Some(t) = r
+                .entities
+                .get(&(id as i32))
+                .filter(|t| t.kind != "minecraft:text_display")
+            else {
                 continue;
             };
+            let origin = glam::DVec3::new(t.position[0], t.position[1], t.position[2]);
+            let at = origin + glam::DVec3::Y * 0.5;
             if at.distance_squared(camera) >= 64.0 * 64.0 {
                 continue;
             }
@@ -43,7 +45,26 @@ impl Game<'_> {
                 lines: vec![(name.resolve_legacy(), 0.0)],
                 light,
                 discrete: false,
+                entity_id: id,
+                kind: TagKind::Fixed(entity_kind(&t.kind)),
+                origin,
+                score: true,
             });
         }
     }
+}
+
+/// An entity type's id kept for the life of the process, as a name tag's kind is `&'static str`
+/// (`TagKind::Fixed`). Equal ids share one allocation: a server's few entity types, once each.
+fn entity_kind(id: &str) -> &'static str {
+    use std::collections::BTreeSet;
+    use std::sync::{Mutex, PoisonError};
+    static POOL: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
+    let mut pool = POOL.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(&known) = pool.get(id) {
+        return known;
+    }
+    let leaked: &'static str = Box::leak(id.to_owned().into_boxed_str());
+    pool.insert(leaked);
+    leaked
 }

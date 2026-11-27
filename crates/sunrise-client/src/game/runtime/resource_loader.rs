@@ -364,6 +364,7 @@ pub(super) fn run_loading(
         renderer: None,
         boot_renderer: None,
         world_renderer: None,
+        pick_hdr: Default::default(),
         max_atlas_size,
         boot: sunrise_client::hud::HudAtlas::boot(),
         gui: None,

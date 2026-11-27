@@ -117,7 +117,7 @@ impl Game<'_> {
                 return true;
             }
             if self.dialog_open() {
-                if let Err(e) = self.dialog_key(KeyCode::Escape, None, None) {
+                if let Err(e) = self.dialog_key(KeyCode::Escape, None) {
                     log::warn!("Dialog Back: {e}");
                 }
                 return true;
@@ -599,7 +599,9 @@ impl Game<'_> {
             self.settings.sensitivity as f32,
             self.settings.invert_x,
             self.settings.invert_y,
-            self.zoom_turn_scale() as f32,
+            // Sunrise retired its mods' zoom (`native_zoom`): mods scale turning through
+            // `CalculatePlayerTurn` now, which a touch's turn doesn't go through.
+            1.0,
         );
         if self.mobile.ui.virtual_mouse {
             let speed = self
@@ -1194,7 +1196,6 @@ impl Game<'_> {
             if down && !self.captured && self.focused {
                 self.capture(true);
             }
-            self.extras_mouse(button, down);
             self.native_mouse_button_post(
                 match button {
                     MouseButton::Left => 0,

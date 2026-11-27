@@ -252,10 +252,11 @@ impl Renderer {
             .filter(|_| flat)
             .map(|f| f.draw_layout.clone());
         let terrain = self.pack_atlas.is_some();
-        // Starling translates the pack on the build thread (`pack`), so what its programs draw is known
-        // once it is built: until then the game's own terrain layout stays (Sunrise's `draws_of` needs the
-        // translated pack here, which on a phone took seconds of the frame).
-        let draws_sections = PackDraws::default();
+        // Starling translates the pack on the build thread (`pack`), which on a phone takes seconds
+        // a frame can't give: what its programs draw (`draws_of`) is set there once it is
+        // translated, and the layouts follow it while its pipelines are built.
+        let draws_sections = std::sync::Arc::new(std::sync::OnceLock::new());
+        let translated = draws_sections.clone();
         let clouds = self.cloud_bindings.clone();
         let mod_runtime = crate::mod_pipelines::pack_runtime_specs();
         let mod_set1_owned: Vec<Option<wgpu::BindGroupLayout>> = self
@@ -306,9 +307,11 @@ impl Renderer {
                 weather: true,
                 hand: true,
             };
+            let source = pack();
+            let _ = translated.set(PackLoading::draws_of(&source, terrain));
             let post = pack_post::PackPost::new_with_mods(
                 (&device, &queue, &adapter),
-                pack(),
+                source,
                 format,
                 world,
                 mod_runtime

@@ -623,8 +623,11 @@ impl Loading {
                     let root = preparer::skin()?;
                     let source =
                         sunrise_assets::resource_source::ResourceSource::directory(root.clone());
-                    let ui = UiResources::load(&source, &root).map_err(|e| e.to_string());
-                    Some((root, ui))
+                    // Within the GPU's side, which the atlas waits for (`atlas_limit`).
+                    let limit = sunrise_client::hud::MAX_ATLAS_SIZE;
+                    let ui = UiResources::load_with_limit(&source, &root, limit)
+                        .map_err(|e| e.to_string());
+                    Some((root, ui, source))
                 })
                 .inspect_err(|e| log::warn!("Sunrise: the setup's skin did not start: {e}"))
                 .ok();
@@ -633,8 +636,10 @@ impl Loading {
             && let Some(handle) = self.setup.skin.take()
         {
             match handle.join() {
-                Ok(Some((root, Ok(gui)))) => self.set_ui(gui, root),
-                Ok(Some((_, Err(e)))) => log::warn!("Sunrise: the setup's skin did not load: {e}"),
+                Ok(Some((root, Ok(gui), source))) => self.set_ui(gui, root, source),
+                Ok(Some((_, Err(e), _))) => {
+                    log::warn!("Sunrise: the setup's skin did not load: {e}")
+                }
                 Ok(None) => {}
                 Err(_) => log::warn!("Sunrise: the setup's skin load panicked"),
             }

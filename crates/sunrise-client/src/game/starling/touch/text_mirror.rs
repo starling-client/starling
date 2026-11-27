@@ -452,12 +452,23 @@ impl Game<'_> {
         if text.is_empty() {
             return;
         }
+        // Sunrise's text inputs answer whether they took the text: a mirrored field always does.
         match self.text_context() {
-            Some("sign") => self.sign_input(None, Some(text)),
-            Some("book") => self.book_input(None, Some(text)),
-            Some("anvil") => self.station_text(Some(text), false),
-            Some("creative") => self.creative_search_edit(Some(text)),
-            Some("title") => self.title_edit(Some(text), false),
+            Some("sign") => {
+                let _ = self.sign_input(None, Some(text));
+            }
+            Some("book") => {
+                let _ = self.book_input(None, Some(text));
+            }
+            Some("anvil") => {
+                let _ = self.station_text(Some(text), false);
+            }
+            Some("creative") => {
+                let _ = self.creative_search_edit(Some(text));
+            }
+            Some("title") => {
+                let _ = self.title_edit(Some(text), false);
+            }
             #[cfg(target_os = "android")]
             Some("catalog") => self.catalog_type(text),
             _ => {}
@@ -468,17 +479,35 @@ impl Game<'_> {
     /// arrows.
     fn mirror_key(&mut self, key: KeyCode) {
         match self.text_context() {
-            Some("chat") => self.chat_key_code(key, None),
-            Some("sign") => self.sign_input(Some(key), None),
-            Some("book") => self.book_input(Some(key), None),
+            Some("chat") => {
+                let _ = self.chat_key_code(key, None);
+            }
+            Some("sign") => {
+                let _ = self.sign_input(Some(key), None);
+            }
+            Some("book") => {
+                let _ = self.book_input(Some(key), None);
+            }
             Some("command") => match key {
-                KeyCode::Enter | KeyCode::NumpadEnter => self.command_block_done(),
-                _ => self.command_block_key_code(key, None, None),
+                KeyCode::Enter | KeyCode::NumpadEnter => {
+                    let _ = self.command_block_done();
+                }
+                _ => {
+                    let _ = self.command_block_key_code(key, None, None);
+                }
             },
-            Some("anvil") if key == KeyCode::Backspace => self.station_text(None, true),
-            Some("creative") if key == KeyCode::Backspace => self.creative_search_backspace(false),
-            Some("recipe") if key == KeyCode::Backspace => self.recipe_text(None, true),
-            Some("world") if key == KeyCode::Backspace => self.world_options_text(None),
+            Some("anvil") if key == KeyCode::Backspace => {
+                let _ = self.station_text(None, true);
+            }
+            Some("creative") if key == KeyCode::Backspace => {
+                let _ = self.creative_search_backspace(false);
+            }
+            Some("recipe") if key == KeyCode::Backspace => {
+                let _ = self.recipe_text(None, true);
+            }
+            Some("world") if key == KeyCode::Backspace => {
+                let _ = self.world_options_text(None);
+            }
             // As the options take them from a keyboard: Enter keeps Skin Customization's name or
             // leaves a custom button's box, Tab moves the focus on.
             Some("options") => {
@@ -502,7 +531,9 @@ impl Game<'_> {
                         t.confirm_edit();
                     }
                 }
-                KeyCode::Backspace => self.title_edit(None, true),
+                KeyCode::Backspace => {
+                    let _ = self.title_edit(None, true);
+                }
                 KeyCode::Tab => {
                     if let Some(t) = self.title.as_mut() {
                         t.tab();
@@ -520,7 +551,7 @@ impl Game<'_> {
                     _ => false,
                 };
                 if keyed {
-                    let _ = self.dialog_key(key, None, None);
+                    let _ = self.dialog_key(key, None);
                 }
             }
             _ => {}

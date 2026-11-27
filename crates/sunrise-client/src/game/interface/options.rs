@@ -606,7 +606,8 @@ impl Game<'_> {
                 Event::TouchLayout => {
                     self.settings.save(&Self::options_path());
                     self.screen = Screen::Playing;
-                    self.dragging = false;
+                    // The press that opened it drags nothing in the editor.
+                    self.drag_button = None;
                     self.open_touch_editor();
                 }
                 // The Mods screen's links go through ConfirmLinkScreen, back to the options.

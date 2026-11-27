@@ -100,6 +100,7 @@ impl Loading {
             &self.vanilla_root,
             self.started,
             &self.progress,
+            &self.max_atlas_size,
         )?;
         // Follow the new generation after the failed startup's result was delivered.
         self.follow_loader(receiver, handle);
@@ -208,10 +209,11 @@ impl Loading {
         let here = boot.info().backend == wgpu::Backend::Gl;
         #[cfg(not(target_os = "android"))]
         let here = false;
-        // A mod's registered atlases are read from the GUI atlas (`RendererParts::hud_pages`),
+        // A mod's registered atlases are read from the GUI atlas (`RendererParts::build`),
         // which stays with the loading screen.
         if here || !gui.atlas.registered.is_empty() {
-            let built = startup::time("renderer.world", || parts.build(lent.device()))
+            let pages = Some(&gui.atlas);
+            let built = startup::time("renderer.world", || parts.build(lent.device(), pages))
                 .map(|(renderer, pixels)| (renderer, pixels.into_owned()));
             // As a build on the thread that fails (`poll_world_renderer`): these resources are
             // done with. Android keeps the loop running after a failure, and would build from
@@ -234,7 +236,8 @@ impl Loading {
         let thread = std::thread::Builder::new()
             .name("world-renderer".into())
             .spawn(move || {
-                startup::time("renderer.world", || parts.build(lent.device()))
+                // A mod's registered atlases built it on this thread (above).
+                startup::time("renderer.world", || parts.build(lent.device(), None))
                     .map(|(renderer, pixels)| (renderer, pixels.into_owned()))
                     .map_err(|e| e.to_string())
             })?;

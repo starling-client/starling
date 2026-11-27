@@ -1013,7 +1013,6 @@ impl Game<'_> {
         r.abilities.update_for_mode(adjust_mode.id());
         r.flat = spawn.flat;
         r.loaded_sent = false;
-        r.abilities = None;
         // A replacement LevelLoadingScreen starts its bar from nothing (the
         // first one carries on from the server's start).
         if self.player.is_some() {

@@ -1111,8 +1111,9 @@ pub(crate) struct PackLoading {
     started: std::time::Instant,
     /// What its terrain and shadow programs will draw from the game's sections, as the built
     /// pack's `has_terrain` and `has_shadow` will say (`PackLoading::draws_of`), for the layouts
-    /// the frames drawn meanwhile keep (`Renderer::pack_pending`).
-    draws: PackDraws,
+    /// the frames drawn meanwhile keep (`Renderer::pack_pending`). Starling: set on the build
+    /// thread once the pack is translated there (`load_shader_pack`); empty until then.
+    draws: std::sync::Arc<std::sync::OnceLock<PackDraws>>,
 }
 
 /// A running `shaders/` pack's block ids (`Renderer::pack_block_ids`).
@@ -1135,9 +1136,6 @@ impl PackLoading {
     /// terrain or translucent shadow program built with it) and `draws_sections` (a solid,
     /// cutout or translucent terrain program, or that shadow pass). A program the device then
     /// refuses to build is not foreseen: the layouts follow the built pack once it runs.
-    // Starling translates a pack on its build thread (`load_shader_pack`): what it draws is known
-    // only once it is built, and the layouts follow it then.
-    #[allow(dead_code)]
     pub(crate) fn draws_of(post: &sunrise_shaders::Post, atlas: bool) -> PackDraws {
         let shadow = atlas
             && post.shadow_pass

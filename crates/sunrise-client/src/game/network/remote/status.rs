@@ -114,13 +114,7 @@ impl Game<'_> {
         // Starling, Options > Skin Customization: the player's own skin, in this game only (others
         // get what the server sends of the profile).
         if let Some((own, own_slim)) = self.own_skin_sprite() {
-            resolved.retain(|(u, _)| *u != local);
-            resolved.push((local, own));
-            if own_slim {
-                slim.insert(local);
-            } else {
-                slim.remove(&local);
-            }
+            skins.entry(local).or_default().custom_body = Some((own, own_slim));
         }
         // An offline name's skin from the launcher, where neither the server
         // nor an account gives the local player textures.

@@ -12,8 +12,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use sunrise_client::{
-    blocks::BlockFacts,
-    camera::{CameraEntity, CameraType, LivingCamera},
+    camera::{CameraEntity, LivingCamera},
     collisions::SceneCollisions,
 };
 // Starling: open to the crate, as native mods made for Sunrise import it from here
