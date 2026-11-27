@@ -209,13 +209,7 @@ class AllowTests(unittest.TestCase):
 
 class WorkflowIdTests(unittest.TestCase):
     def test_every_command_workflow_passes_the_authors_id(self):
-<<<<<<< HEAD
-        for name in ("claim-command.yml",):  # the only command workflow Starling ships
-||||||| 46c00106def
-        for name in ("nightly-command.yml", "triage-command.yml", "claim-command.yml"):
-=======
-        for name in ("nightly-command.yml", "triage-command.yml", "fork-claim.yml"):
->>>>>>> ed6772e2118
+        for name in ("fork-claim.yml",):  # the only command workflow Starling ships
             text = (ROOT / ".github/workflows" / name).read_text()
             self.assertIn("AUTHOR_ID: ${{ github.event.comment.user.id }}", text, name)
 

@@ -189,7 +189,6 @@ jobs:
     def test_every_job_on_our_runners_can_go_back_to_github(self):
         count = 0
         for where, _, _, _, value, pools in routed():
-<<<<<<< HEAD
             count += 1
             # dyna-ci.yml (ours) routes through the changes job's self_hosted
             # output and dyna-medium, or SELF_HOSTED_CI=all with the fork guard
@@ -210,30 +209,6 @@ jobs:
                 # The desktop paused: every checks job back to GitHub, the bots stay.
                 self.assertIn("vars.SELF_HOSTED_CI != 'light'", value, where)
         self.assertGreaterEqual(count, 5)
-||||||| 46c00106def
-            count += 1
-            # dyna-ci.yml (ours) routes through the changes job's self_hosted
-            # output and dyna-medium, or SELF_HOSTED_CI=all with the fork guard
-            # before the playsunrise-ci labels; the carried upstream files use
-            # SELF_HOSTED_CI != 'off'. Both fall back to GitHub's runners.
-            if "dyna-ci.yml" in where:
-                self.assertIn("needs.changes.outputs.self_hosted == 'true'", value, where)
-                self.assertIn("vars.SELF_HOSTED_CI == 'all'", value, where)
-                self.assertIn(TRUSTED, value, where)
-            else:
-                self.assertIn("vars.SELF_HOSTED_CI != 'off'", value, where)
-            # Both labels select a GitHub-hosted Ubuntu runner when our pools are disabled.
-            self.assertRegex(value, r"\|\| 'ubuntu-(?:latest|24\.04)' \}\}$", where)
-            if "checks" in pools:
-                # The desktop paused: every checks job back to GitHub, the bots stay.
-                self.assertIn("vars.SELF_HOSTED_CI != 'light'", value, where)
-        self.assertGreaterEqual(count, 10)
-=======
-            with self.subTest(job=where):
-                count += 1
-                self.assert_switch_routes_back(where, value, pools)
-        self.assertGreaterEqual(count, 10)
->>>>>>> ed6772e2118
 
     def assert_switch_routes_back(self, where, value, pools):
         """SELF_HOSTED_CI=off reaches neither pool and =light no checks runner, on every branch of `runs-on`."""
@@ -398,46 +373,6 @@ jobs:
                     with self.assertRaises(AssertionError):
                         self.test_no_deployment_environment_on_our_runners()
 
-<<<<<<< HEAD
-||||||| 46c00106def
-    def test_checks_verify_runs_on_main_not_on_pull_requests(self):
-        text = (WORKFLOWS / "ci.yml").read_text()
-        # A push gets dyna-checks; a fork's push held GitHub's runners ahead of the release jobs (2026-11-18). A pull
-        # request runs verify only when a maintainer labels it, and never with a token that writes.
-        self.assertEqual(triggers(text), {"pull_request", "schedule", "workflow_dispatch"})
-        self.assertIn("  pull_request:\n    types: [labeled]\n", text)
-        self.assertNotRegex(text, r":\s*write")
-        ci = dict(jobs(text))
-        for part in ("verify-tree", "verify-lint", "verify-test"):
-            with self.subTest(part=part):
-                self.assertIn("needs: changes", ci[part])
-                self.assertIn("github.event_name == 'schedule' || inputs.verify ||", ci[part])
-                self.assertIn("github.event.label.name == 'ci:verify' &&", ci[part])
-        self.assertIn("needs: [verify-tree, verify-lint, verify-test]", ci["verify"])
-        # Never skipped where its parts ran: GitHub counts a skipped required check as passed.
-        self.assertIn("if: always()", ci["verify"])
-
-=======
-    def test_checks_verify_runs_on_main_not_on_pull_requests(self):
-        document = workflow(WORKFLOWS / "ci.yml")
-        # A push gets dyna-checks; a fork's push held GitHub's runners ahead of the release jobs (2026-11-18). A pull
-        # request runs verify only when a maintainer labels it, and never with a token that writes.
-        self.assertEqual(triggers(document), {"pull_request", "schedule", "workflow_dispatch"})
-        self.assertEqual(document["on"]["pull_request"], {"types": ["labeled"]})
-        self.assertNotIn("write", permissions(document, *document["jobs"].values()).values())
-        ci = dict(jobs(document))
-        for part in ("verify-tree", "verify-lint", "verify-test"):
-            with self.subTest(part=part):
-                self.assertEqual(ci[part]["needs"], "changes")
-                self.assertIn("github.event_name == 'schedule' || inputs.verify ||", ci[part]["if"])
-                self.assertIn("github.event.label.name == 'ci:verify' &&", ci[part]["if"])
-        self.assertEqual(ci["verify"]["needs"], ["verify-tree", "verify-lint", "verify-test"])
-        # Never skipped where its parts ran: GitHub counts a skipped required check as passed.
-        self.assertTrue(ci["verify"]["if"].startswith("always()"))
-
-    @needs_runner_shell
-    @unittest.skipUnless(shutil.which("jq"), "the hook reads the event with jq")
->>>>>>> ed6772e2118
     def test_the_light_runners_refuse_forks_themselves(self):
         hook = ROOT / "tools/ci/job-started.sh"
         with tempfile.TemporaryDirectory() as folder:

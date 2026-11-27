@@ -12,7 +12,6 @@
 
 <p align="center">
   <a href="#download"><b>Download</b></a> ·
-<<<<<<< HEAD
   <a href="https://discord.gg/7xcp8Y5nkv"><b>Discord</b></a> ·
   <a href="#android-status"><b>Android status</b></a> ·
   <a href="roadmap/starling.md"><b>Roadmap</b></a> ·
@@ -20,18 +19,6 @@
   <a href="#build-from-source"><b>Build from source</b></a> ·
   <a href="CONTRIBUTING.md"><b>Contributing</b></a> ·
   <a href="https://github.com/ludovic111/sunrise"><b>Sunrise</b></a>
-||||||| 46c00106def
-  <a href="https://playsunrise.net/docs/"><b>Docs</b></a> ·
-  <a href="ROADMAP.md"><b>Roadmap</b></a> ·
-  <a href="#contributing"><b>Contributing</b></a>
-=======
-  <a href="https://playsunrise.net/docs/"><b>Docs</b></a> ·
-  <a href="ROADMAP.md"><b>Roadmap</b></a> ·
-  <a href="#contributing"><b>Contributing</b></a> ·
-  <a href="https://x.com/sunriserust"><b>X</b></a> ·
-  <a href="https://www.instagram.com/sunrise.rust/"><b>Instagram</b></a> ·
-  <a href="https://www.youtube.com/@playsunrise"><b>YouTube</b></a>
->>>>>>> ed6772e2118
 </p>
 
 # Starling
@@ -107,27 +94,9 @@ for contents, limits and controls. Before installation or after an early startup
 failure, Diagnostics also opens in a separate window; long-press the app icon to
 reach it without starting the game.
 
-<<<<<<< HEAD
 ## Mods
-||||||| 46c00106def
-- **Content mods** (`.smod`): blocks, items, recipes, loot, models and textures, with no code.
-- **Native mods** (also `.smod`, whose manifest has a `[native]` table): Rust that the launcher compiles into the game for you, with nothing to install.
-- **Java mods** (Fabric, NeoForge, Forge) don't run: Sunrise has no Java. The launcher carries over the data and assets inside their jars, and imports modpacks (`.mrpack`, CurseForge zips, Prism instances) the same way ([modpacks](https://playsunrise.net/docs/modpacks)).
-- **Shader packs**: Iris/OptiFine-format packs (`shaders/` folders) and Sunrise's own WGSL packs, under Video Settings → Shader Packs ([pack format](docs/shaders.md)).
-=======
-- **Content mods** (`.smod`): blocks, items, recipes, loot, models and textures, with no code.
-- **Native mods** (also `.smod`, whose manifest has a `[native]` table): Rust that the launcher compiles into the game for you, with nothing to install.
-- **Java mods** (Fabric, NeoForge, Forge) don't run: Sunrise has no Java. The launcher carries over the data and assets inside their jars, and imports modpacks (`.mrpack`, CurseForge zips, Prism instances) the same way ([modpacks](https://playsunrise.net/docs/modpacks)).
-- **Shader packs**: Iris/OptiFine-format packs (`shaders/` folders), under Sunrise Graphics → Shaders → Shader Packs ([pack format](docs/shaders.md)).
->>>>>>> ed6772e2118
 
-<<<<<<< HEAD
 Starling runs Sunrise's mods. Open the file with Starling, from your file manager or your downloads, and it shows up in **Options > Mods**.
-||||||| 46c00106def
-Mods are off by default: a fresh install plays exactly like vanilla 26.3. The launcher's Mods page browses Sunrise's registry and Modrinth. [Mods](https://playsunrise.net/docs/mods) · [make a mod](docs/mods.md).
-=======
-Mods are off by default: a fresh install plays exactly like vanilla 26.3. The launcher's Mods page browses Sunrise's registry and Modrinth. [Mods](https://playsunrise.net/docs/mods) · [make a mod](docs/modding/src/introduction.md).
->>>>>>> ed6772e2118
 
 - **`.hnmod`, native mods (ARM64 only):** tap **Compile**. Starling tells you the risks, builds the game with your mods while you fish or mine, and restarts with them. It takes a few minutes and needs a connection, and after an update you compile again. The build service currently produces ARM64 libraries; other app architectures explain this limitation and do not offer compilation or prebuilt downloads. A native mod runs as part of the game, so install only the ones you trust. See [native mods](docs/native-mods.md) and [how Starling builds them](docs/starling-native-mods.md); [wrench](native-mods/wrench) is an example.
 - **`.smod`, content mods:** data-only mods, with nothing to compile. See [mods](docs/mods.md).

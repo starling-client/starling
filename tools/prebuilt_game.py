@@ -1605,17 +1605,14 @@ def main() -> None:
     pack_parser.add_argument("--stage-tool", type=Path, help="the sunrise-stage binary to export the surface with")
     pack_parser.add_argument("--with-tool", action="store_true",
                              help="also pack the target's tool on a server leg (a server-only SDK no client leg completes)")
-<<<<<<< ours
     # Starling's Android build: HEAD staged with its replacement slots and build data (`stage`), for the APK to be
     # built from, so mixin mods install their copies on the phone.
     stage_parser = commands.add_parser("stage")
     stage_parser.add_argument("target", type=Path, help="an exclusively owned folder; the staged source is TARGET/stage")
     stage_parser.add_argument("--widen", action="store_true", help="the game's crates fully public first (tools/android_widen.py)")
-=======
     pack_parser.add_argument("--programs", action="store_true",
                              help="also pack programs-<target>[-server].tar.xz: the player folder without the game "
                                   "program (needs the checkout's exporters/)")
->>>>>>> theirs
     tool_parser = commands.add_parser("tool")
     tool_parser.add_argument("dist", type=Path)
     gather_parser = commands.add_parser("gather")

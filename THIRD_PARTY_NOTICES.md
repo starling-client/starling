@@ -656,7 +656,6 @@ OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-<<<<<<< HEAD
 ## Sunrise Android performance work
 
 Adapted from [Vasysik/sunrise-android at fa548eb7abe91c194d3780e4580b9746323cd606](https://github.com/Vasysik/sunrise-android/tree/fa548eb7abe91c194d3780e4580b9746323cd606/crates),
@@ -675,8 +674,6 @@ Copyright (c) 2026 Ludovic Marie and the Horizon contributors.
   load (`loading_frame_due` in `game/runtime/loading_screen.rs`), from its commit f5cf0231bc.
 - Shadow maps of at most 4096 on Android (`shadow_side_limit` in `gfx/pack_shadow.rs`), from
   `max_shadow` in its `gfx/pack_shadow.rs` and `gfx/native_shadow.rs`.
-||||||| 46c00106def
-=======
 ## Sigstore attestation verification
 
 `sunrise-attestation` uses [`sigstore-verify` 0.17](https://crates.io/crates/sigstore-verify/0.17.0)
@@ -685,4 +682,3 @@ It bundles [Sigstore's public-good TUF target](https://github.com/sigstore/root-
 unchanged, under [Apache-2.0](crates/sunrise-attestation/LICENSE-APACHE-SIGSTORE). Its offline test
 fixture is a public [Ruff release attestation](crates/sunrise-attestation/tests/fixtures/README.md)
 from the GitHub attestation API, not the release asset itself.
->>>>>>> ed6772e2118

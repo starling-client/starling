@@ -1,11 +1,5 @@
 [workspace]
-<<<<<<< HEAD
-exclude = ["crates/sunrise-telemetry-server", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/android-activity", "third_party/winit", "tools/fixtures/paper-trace-mod"]
-||||||| 46c00106def
-exclude = ["crates/sunrise-telemetry-server", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "tools/fixtures/paper-trace-mod"]
-=======
-exclude = ["crates/sunrise-telemetry-server", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/winit", "tools/fixtures/paper-trace-mod", "tools/fixtures/mod-pipeline-bench"]
->>>>>>> ed6772e2118
+exclude = ["crates/sunrise-telemetry-server", "crates/sunrise-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "third_party/android-activity", "third_party/winit", "tools/fixtures/paper-trace-mod", "tools/fixtures/mod-pipeline-bench"]
 members = [
     "crates/starling-catalog",
     "crates/starling-platform",
@@ -30,13 +24,9 @@ members = [
     "crates/sunrise-hdr",
     "crates/sunrise-world",
     "crates/sunrise-client",
-<<<<<<< HEAD
     # Starling: the game as a NativeActivity library; empty on other targets.
     "crates/sunrise-android",
-||||||| 46c00106def
-=======
     "crates/sunrise-parity-fixtures",
->>>>>>> ed6772e2118
     "crates/sunrise-internals",
     "crates/sunrise-client-lib",
     "crates/sunrise-gameplay",
