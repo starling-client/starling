@@ -2,19 +2,11 @@
 //! slot lists.
 use std::sync::Arc;
 use sunrise_client_core::nbt_value::{number, string, text};
-<<<<<<< HEAD
-use sunrise_core::nbt::Tag;
-use sunrise_world::datafix::dynamic::{Number, as_number};
+use sunrise_core::nbt::{Tag, parse_snbt, snbt_whitespace};
 #[path = "item_nbt/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
-||||||| 46c00106def
-use sunrise_core::nbt::Tag;
-use sunrise_world::datafix::dynamic::{Number, as_number};
-=======
-use sunrise_core::nbt::{Tag, parse_snbt, snbt_whitespace};
->>>>>>> ed6772e2118
 
 /// The two measured saved forms of `BlockPredicate.CODEC`, and the `Identifier`s
 /// of `attribute_modifiers` written whole. Operate only on
@@ -97,30 +89,7 @@ pub fn encode_item(
 pub fn item_to_nbt(stack: &crate::items::ItemStack, items: &crate::items::Items) -> Tag {
     Tag::compound(encode_item(stack, items))
 }
-<<<<<<< HEAD
 
-/// A stack from a command or data file, without legacy save handling. `ItemStack.CODEC`
-/// ignores unknown fields (including `Count`); `count` defaults to 1. A present count
-/// must be numeric and in 1 to 99 after Java's `Number.intValue`. A `components` patch
-/// naming a transient component makes no stack.
-pub fn item_from_persistent_nbt(tag: &Tag) -> Option<crate::items::ItemStack> {
-    let count = match tag.get("count") {
-        Some(value) => as_number(value)
-            .map(Number::int_value)
-            .filter(|n| (1..=99).contains(n))? as u32,
-        None => 1,
-||||||| 46c00106def
-/// A stack from a command or data file, without legacy save handling. `ItemStack.CODEC`
-/// ignores unknown fields (including `Count`); `count` defaults to 1. A present count
-/// must be numeric and in 1 to 99 after Java's `Number.intValue`. A `components` patch
-/// naming a transient component makes no stack.
-pub fn item_from_persistent_nbt(tag: &Tag) -> Option<crate::items::ItemStack> {
-    let count = match tag.get("count") {
-        Some(value) => as_number(value)
-            .map(Number::int_value)
-            .filter(|n| (1..=99).contains(n))? as u32,
-        None => 1,
-=======
 /// Encode an optional item stack as `ItemStack.OPTIONAL_CODEC` over `JsonOps`:
 /// `None` encodes as `{}`, and `Some(stack)` encodes as `{"id", "count", "components": ...}`
 /// against the loaded item prototypes.
@@ -142,7 +111,6 @@ pub fn item_to_json_with(
 
     let Some(stack) = stack else {
         return Ok(serde_json::Value::Object(Default::default()));
->>>>>>> ed6772e2118
     };
     if stack.item.as_ref() == "minecraft:air" {
         return Err(JsonError::field("id", "air is not a valid item"));

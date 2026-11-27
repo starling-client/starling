@@ -6,19 +6,13 @@ use crate::{
     text::Text,
 };
 use mod_api::ButtonSprites;
-<<<<<<< HEAD
-use std::time::Instant;
+use serde_json::value::RawValue;
+use std::{collections::HashMap, time::Instant};
+use sunrise_assets::resource_source::ResourceSource;
 #[path = "ui/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
-||||||| 46c00106def
-use std::time::Instant;
-=======
-use serde_json::value::RawValue;
-use std::{collections::HashMap, time::Instant};
-use sunrise_assets::resource_source::ResourceSource;
->>>>>>> ed6772e2118
 
 /// `GuiSpriteScaling.NineSlice`: the sprite's size in GUI pixels, whatever
 /// its texture's resolution, its borders (left, top, right, bottom) in the

@@ -5,15 +5,6 @@ mod starling;
 pub use self::starling::*;
 
 impl Game<'_> {
-<<<<<<< HEAD
-    /// `C::SetEntityData`: its arms of `apply_packet`, guard and order kept.
-    pub(super) fn apply_set_entity_data_packet(&mut self, p: play::SetEntityData) {
-        // Starling: any entity's custom name (armor stand holograms, objects).
-        self.remote_names(p.id, &p.values);
-||||||| 46c00106def
-    /// `C::SetEntityData`: its arms of `apply_packet`, guard and order kept.
-    pub(super) fn apply_set_entity_data_packet(&mut self, p: play::SetEntityData) {
-=======
     /// The entity type of a resident remote entity (`ClientLevel.getEntity`), if present.
     fn remote_entity_kind(&self, id: i32) -> Option<String> {
         let r = self.remote.as_ref()?;
@@ -81,7 +72,8 @@ impl Game<'_> {
         let (index, _, value) = entry;
         let single = std::slice::from_ref(entry);
         let size_key = self.synched_size_key(id as u32);
->>>>>>> ed6772e2118
+        // Starling: any entity's custom name (armor stand holograms, objects).
+        self.remote_names(p.id, &p.values);
         if let Some(r) = self.remote.as_mut() {
             if let (0, Value::Byte(flags)) = (index, value) {
                 if let Some(t) = r.entities.get_mut(&id) {

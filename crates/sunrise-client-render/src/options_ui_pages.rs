@@ -119,13 +119,7 @@ pub(super) fn sunrise_page_tooltip(page: Page) -> Option<&'static str> {
         Page::Controller => "sunrise.pages.controller.tooltip",
         Page::Pvp => "sunrise.pages.pvp.tooltip",
         Page::Agent => "sunrise.pages.agent.tooltip",
-<<<<<<< HEAD
-        Page::ShaderPacks => "sunrise.pages.shader_packs.tooltip",
         Page::GpuDrivers => "sunrise.pages.gpu_drivers.tooltip",
-||||||| 46c00106def
-        Page::ShaderPacks => "sunrise.pages.shader_packs.tooltip",
-=======
->>>>>>> ed6772e2118
         Page::Mods => "sunrise.pages.mods.tooltip",
         Page::Music => "sunrise.pages.music.tooltip",
         _ => return None,
@@ -140,7 +134,7 @@ fn label_text(label: added::Label) -> Text {
 }
 
 impl OptionsUi {
-<<<<<<< HEAD
+<<<<<<< ours
     /// Sunrise Settings: its pages, then the pages crates registered for it.
     pub(super) fn sunrise_rows(&self, s: &Settings) -> Vec<Row> {
         // Two to a row, as vanilla's OptionsList.addSmall lays out
@@ -183,51 +177,8 @@ impl OptionsUi {
         }
     }
 
-||||||| 46c00106def
-    /// Sunrise Settings: its pages, then the pages crates registered for it.
-    pub(super) fn sunrise_rows(&self, s: &Settings) -> Vec<Row> {
-        // Two to a row, as vanilla's OptionsList.addSmall lays out
-        // buttons; each opens one of Sunrise's settings pages. Each page has
-        // one way in: graphics and shader packs are Video Settings' (the graphics
-        // screen), the controller is Controls', mods are the Options screen's. The
-        // registry's mod browser is Sunrise's own and opens from here, not from the
-        // two-button Mods footer.
-        let open = |key: &str, page: Page| button(0.0, 0.0, 150.0, tr(key), Act::Push(page));
-        let mut rows: Vec<Row> = vec![
-            Row::Buttons(
-                open("sunrise.pages.open.extras", Page::Extras),
-                Some(open("sunrise.pages.open.pvp", Page::Pvp)),
-            ),
-            Row::Buttons(open("sunrise.pages.open.studio", Page::Studio), None),
-            // No AI hides the AI Agent page and everything AI.
-            if s.extras.no_ai {
-                Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)
-            } else {
-                Row::Buttons(
-                    open("sunrise.pages.open.agent", Page::Agent),
-                    Some(self.extra_button(s, crate::extras::Item::NoAi)),
-                )
-            },
-            Row::Buttons(open("sunrise.mods.browse", Page::ModBrowser), None),
-        ];
-        self.added_entries(&mut rows);
-        rows
-    }
-
-    /// The entries of the pages registered for Sunrise Settings, two to a row like the engine's.
-    fn added_entries(&self, rows: &mut Vec<Row>) {
-        let mut entries = registered()
-            .iter()
-            .enumerate()
-            .filter(|(_, page)| page.place() == added::Place::SunriseSettings)
-            .map(|(i, page)| button(0.0, 0.0, 150.0, tr(page.title()), Act::Push(Page::Added(i))));
-        while let Some(first) = entries.next() {
-            rows.push(Row::Buttons(first, entries.next()));
-        }
-    }
-
 =======
->>>>>>> ed6772e2118
+>>>>>>> theirs
     /// A registered page's rows, asked of it each time the page is drawn.
     pub(super) fn added_rows(&self, page: usize) -> Vec<Row> {
         let Some(registered) = registered().get(page) else {

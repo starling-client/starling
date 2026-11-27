@@ -10,14 +10,12 @@ pub(crate) use launch_options::Options;
 #[cfg(not(target_os = "android"))]
 use loading_screen::missing_resources;
 use loading_screen::{
-<<<<<<< HEAD
+<<<<<<< ours
     App, Loading, event_loop, leave_fullscreen_after, run_event_loop, unclean_start_recovery,
-||||||| 46c00106def
-    App, Loading, leave_fullscreen_after, missing_resources, run_event_loop, unclean_start_recovery,
 =======
     App, Loading, leave_fullscreen_after, preflight_resources, run_event_loop,
     unclean_start_recovery,
->>>>>>> ed6772e2118
+>>>>>>> theirs
 };
 use motion_ids::{motion_at, motion_block_entity};
 #[cfg(test)]
@@ -2256,15 +2254,14 @@ mod server_travel;
 #[cfg(test)]
 #[path = "game/administration/setblock_order_tests.rs"]
 mod setblock_order_tests;
-<<<<<<< HEAD
+<<<<<<< ours
 #[path = "game/starling/setup/mod.rs"]
 mod setup;
-||||||| 46c00106def
 =======
 #[cfg(test)]
 #[path = "game/interface/shader_pack_switch_tests.rs"]
 mod shader_pack_switch_tests;
->>>>>>> ed6772e2118
+>>>>>>> theirs
 #[path = "game/interface/shader_packs.rs"]
 mod shader_packs;
 #[cfg(test)]
@@ -2537,14 +2534,13 @@ mod wither;
 #[cfg(test)]
 #[path = "game/mobs/wither_star_tests.rs"]
 mod wither_star_tests;
-<<<<<<< HEAD
+<<<<<<< ours
 #[path = "game/starling/world_content.rs"]
 mod world_content;
-||||||| 46c00106def
 =======
 #[path = "game/world/world_border.rs"]
 mod world_border;
->>>>>>> ed6772e2118
+>>>>>>> theirs
 #[path = "game/world/world_entry.rs"]
 mod world_entry;
 #[cfg(test)]
@@ -4293,14 +4289,13 @@ struct Game<'a> {
     /// and mannequins) resolve through the services in the background.
     skin_profiles: RefCell<sunrise_client::skins::Resolver>,
     skin_slots: sunrise_client::skins::SkinSlots,
-<<<<<<< HEAD
+<<<<<<< ours
     /// The player's own skin from Options > Skin Customization (game/own_skin.rs).
     own_skin: own_skin::OwnSkin,
-||||||| 46c00106def
 =======
     /// What `apply_player_skin_override` resolved for the selected dynamic texture.
     player_skin_slot: Option<native_hooks::resolve_player_skin::PlayerSkinSlot>,
->>>>>>> ed6772e2118
+>>>>>>> theirs
     /// Runtime trim slots and the last completed preparation for this atlas.
     trim_slots: sunrise_client::trims::TrimSlots,
     cart_models: minecarts::CartModels,
@@ -7965,20 +7960,8 @@ impl Game<'_> {
         } else {
             self.hud_layers(size)
         };
-<<<<<<< HEAD
+<<<<<<< ours
         self.draw_interface_overlays(&mut batch);
-        // The ToastManager draws over every screen, the title and the
-        // options included: the narrator's toast follows the player there.
-        self.draw_narrator_toast(&mut batch);
-||||||| 46c00106def
-        // Vanilla's confirmation replaces the dialog as the screen.
-        if self.command_prompt.is_none() {
-            self.draw_dialog(&mut batch);
-        }
-        self.draw_pack_prompt(&mut batch);
-        self.draw_code_of_conduct(&mut batch);
-        self.draw_link_prompt(&mut batch);
-        self.draw_command_prompt(&mut batch);
         // The ToastManager draws over every screen, the title and the
         // options included: the narrator's toast follows the player there.
         self.draw_narrator_toast(&mut batch);
@@ -7998,7 +7981,7 @@ impl Game<'_> {
         // Gui.extractRenderState draws toasts over the active screen or overlay,
         // after the saving indicator and before the debug overlay.
         self.draw_every_toast(&mut batch);
->>>>>>> ed6772e2118
+>>>>>>> theirs
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
         self.draw_debug_overlay(&mut batch, size);
@@ -8070,13 +8053,7 @@ impl Game<'_> {
             // screen, after its own drawing.
             self.publish_screen_regions(&batch, None);
             self.draw_screen_with_post_hook(&mut batch);
-<<<<<<< HEAD
             menus.finish(&mut batch);
-            self.draw_pack_toasts(&mut batch, true, false);
-||||||| 46c00106def
-            self.draw_pack_toasts(&mut batch, true, false);
-=======
->>>>>>> ed6772e2118
             return batch;
         }
         if self.screen == Screen::Options && self.title.is_some() {
@@ -8084,13 +8061,7 @@ impl Game<'_> {
             self.draw_options(&mut batch, drawn);
             self.publish_screen_regions(&batch, None);
             self.draw_screen_with_post_hook(&mut batch);
-<<<<<<< HEAD
-            self.draw_pack_toasts(&mut batch, true, false);
             menus.finish(&mut batch);
-||||||| 46c00106def
-            self.draw_pack_toasts(&mut batch, true, false);
-=======
->>>>>>> ed6772e2118
             return batch;
         }
         if let Some(title) = &mut self.title
@@ -8119,19 +8090,7 @@ impl Game<'_> {
             }
             self.publish_screen_regions(&batch, None);
             self.draw_screen_with_post_hook(&mut batch);
-<<<<<<< HEAD
-            self.draw_toasts(&mut batch, false);
-            self.draw_tutorial_toasts(&mut batch, false);
-            self.draw_pack_toasts(&mut batch, false, false);
-            self.draw_music_toast(&mut batch, false);
             menus.finish(&mut batch);
-||||||| 46c00106def
-            self.draw_toasts(&mut batch, false);
-            self.draw_tutorial_toasts(&mut batch, false);
-            self.draw_pack_toasts(&mut batch, false, false);
-            self.draw_music_toast(&mut batch, false);
-=======
->>>>>>> ed6772e2118
             return batch;
         }
         if self.title.is_some() {
@@ -8163,34 +8122,14 @@ impl Game<'_> {
             // toasts still come after, as over any screen.
             self.publish_screen_regions(&batch, None);
             self.draw_title_screen_with_post_hook(&mut batch);
-<<<<<<< HEAD
-            self.draw_toasts(&mut batch, false);
-            self.draw_tutorial_toasts(&mut batch, false);
-            self.draw_pack_toasts(&mut batch, false, false);
-            self.draw_music_toast(&mut batch, false);
             menus.finish(&mut batch);
-||||||| 46c00106def
-            self.draw_toasts(&mut batch, false);
-            self.draw_tutorial_toasts(&mut batch, false);
-            self.draw_pack_toasts(&mut batch, false, false);
-            self.draw_music_toast(&mut batch, false);
-=======
->>>>>>> ed6772e2118
             return batch;
         }
         // The ToastManager draws over every screen: a server's packs
         // download while the connection screen shows.
         if self.remote_overlay(&mut batch) {
             self.publish_screen_regions(&batch, None);
-<<<<<<< HEAD
-            self.draw_pack_toasts(&mut batch, false, false);
-            self.draw_music_toast(&mut batch, false);
             menus.finish(&mut batch);
-||||||| 46c00106def
-            self.draw_pack_toasts(&mut batch, false, false);
-            self.draw_music_toast(&mut batch, false);
-=======
->>>>>>> ed6772e2118
             return batch;
         }
         menus.finish(&mut batch);
@@ -8198,14 +8137,8 @@ impl Game<'_> {
         // crosshair, hotbar, effects, bars, sidebar, action bar, titles and chat;
         // the sleep overlay, debug screen and open screens still draw.
         let spectator = self.spectator();
-<<<<<<< HEAD
-        let (full_w, full_h) = (batch.width, batch.height);
-||||||| 46c00106def
-        let (wi, hi) = (w as i32, h as i32);
-=======
         let camera = self.camera_player();
-        let (wi, hi) = (w as i32, h as i32);
->>>>>>> ed6772e2118
+        let (full_w, full_h) = (batch.width, batch.height);
         let mut gui_canceled = false;
         let replaying = self.replay.playing();
         if !replaying {
@@ -8229,14 +8162,13 @@ impl Game<'_> {
         );
         let dispatch_hud = !gui_canceled && !replaying;
         self.hud_layer_next = dispatch_hud.then_some(0);
-<<<<<<< HEAD
+<<<<<<< ours
         let (w, h) = (full_w, full_h);
         let (wi, hi) = (w as i32, h as i32);
-||||||| 46c00106def
 =======
         self.hud_status_heights = Default::default();
         self.hud_status_heights_set.set(None);
->>>>>>> ed6772e2118
+>>>>>>> theirs
         self.ui.room = self.hud_room(w, h, show_hud);
         // Starling: the HUD keeps to the screen's safe area (`hud_safe_insets`), from the hotbar on;
         // what covers the view (the spyglass, the crosshair, the sleep overlay) takes all of it.
@@ -8304,7 +8236,7 @@ impl Game<'_> {
                     return;
                 }
                 if spectator {
-<<<<<<< HEAD
+<<<<<<< ours
                     g.draw_spectator_hotbar(batch);
                 } else {
                     let partial = g.clock.fraction() as f32;
@@ -8331,28 +8263,6 @@ impl Game<'_> {
                     // `extractSlot` for each item, in order, on the path `gui_paint` takes.
                     let mut items = crate::game::gui_paint_items::HotbarItems { game: g };
                     hud_layout::paint_items(batch, &g.gui.atlas, &draws, &mut items);
-||||||| 46c00106def
-                    g.draw_spectator_hotbar(batch);
-                } else {
-                    let partial = g.clock.fraction() as f32;
-                    let inputs = hud_layout::HotbarInputs {
-                        selected: g.selected as i32,
-                        right_handed: !g.settings.main_hand_left,
-                        offhand: g.offhand.is_some(),
-                        slots: std::array::from_fn(|i| {
-                            g.inventory[i]
-                                .as_ref()
-                                .map(|_| (f32::from(g.hotbar_pop[i]) - partial).max(0.0))
-                        }),
-                        offhand_pop: (f32::from(g.hotbar_pop[9]) - partial).max(0.0),
-                        attack: attack
-                            .filter(|_| indicator == 2)
-                            .map(|(strength, _)| strength),
-                    };
-                    let draws = hud_layout::hotbar(wi, hi, &inputs);
-                    // `extractSlot` for each item, in order, on the path `gui_paint` takes.
-                    let mut items = crate::game::gui_paint_items::HotbarItems { game: g };
-                    hud_layout::paint_items(batch, &g.gui.atlas, &draws, &mut items);
 =======
                     g.draw_spectator_hotbar(batch, g.own_player_is_spectator());
                 } else if let Some((inputs, source)) = g.camera_hotbar(camera) {
@@ -8375,7 +8285,7 @@ impl Game<'_> {
                         );
                         hud_layout::paint(batch, &g.gui.atlas, &draws);
                     }
->>>>>>> ed6772e2118
+>>>>>>> theirs
                 }
             });
             self.gui_layer(VanillaGuiLayer::Effects, &mut batch, &mut |g, batch| {
@@ -8564,7 +8474,7 @@ impl Game<'_> {
                 VanillaGuiLayer::SleepOverlay,
                 &mut batch,
                 &mut |g, batch| {
-<<<<<<< HEAD
+<<<<<<< ours
                     let mut draws =
                         hud_overlays::sleep_overlay(full_wi, full_hi, g.sleep_timer as i32);
                     if !draws.is_empty() && margins != [0.0; 4] {
@@ -8577,11 +8487,9 @@ impl Game<'_> {
                         );
                         draws.push(hud_layout::GuiDraw::Pop);
                     }
-||||||| 46c00106def
-                    let draws = hud_overlays::sleep_overlay(wi, hi, g.sleep_timer as i32);
 =======
                     let draws = hud_overlays::sleep_overlay(wi, hi, g.sleep_timer);
->>>>>>> ed6772e2118
+>>>>>>> theirs
                     hud_layout::paint(batch, &g.gui.atlas, &draws);
                 },
             );
@@ -9161,14 +9069,12 @@ impl Game<'_> {
         self.see_through_collector = st_collector;
         self.see_through_vertices = see_through;
         laps.lap("eg_name_tags");
-<<<<<<< HEAD
+<<<<<<< ours
         // Entity shadows (EntityRenderer.extractShadow), unless the Entity Shadows option is off; a
         // native pack's sun shadows replace them.
-||||||| 46c00106def
-        // Entity shadows (EntityRenderer.extractShadow); a native pack's sun shadows replace them.
 =======
         // Entity shadows (EntityRenderer.extractShadow); a shader pack's sun shadows replace them.
->>>>>>> ed6772e2118
+>>>>>>> theirs
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
         let pack_shadows = self
             .renderer
@@ -11960,7 +11866,7 @@ impl Game<'_> {
         ];
         // Camera.extractRenderState: only spectator inside a solidRender block disables smartCull.
         let cave_culling = self.settings.sunrise.cave_culling
-<<<<<<< HEAD
+<<<<<<< ours
             && !self
                 .res
                 .facts()
@@ -11971,15 +11877,6 @@ impl Game<'_> {
         if cave_culling
             && self.title.is_none()
             && !kept_menu
-||||||| 46c00106def
-            && !self
-                .res
-                .facts()
-                .get(self.world.block(block[0], block[1], block[2]))
-                .solid_render;
-        // The cave culling search runs on its worker while the frame is prepared.
-        if cave_culling
-            && self.title.is_none()
 =======
             && !(self.spectator()
                 && self
@@ -11992,7 +11889,7 @@ impl Game<'_> {
         let effective_render_distance = self.effective_render_distance();
         let effective_detail_distance = (effective_render_distance * 16) as f32;
         if self.title.is_none()
->>>>>>> ed6772e2118
+>>>>>>> theirs
             && let Some(renderer) = self.renderer.as_mut()
         {
             renderer.sync_loaded_columns(&self.world.chunks);
@@ -12197,7 +12094,7 @@ impl Game<'_> {
         // CAN_PLACE_ON item matching the block, and spectators with a menu block; Sunrise
         // does not open menus for spectators, so those never show it. An open
         // screen does not hide it: vanilla checks the HUD and the game mode, not the screen.
-<<<<<<< HEAD
+<<<<<<< ours
         let adventure = self.mode == sunrise_client::command::args::GameMode::Adventure;
         let can_build = self.may_build() || adventure;
         let outline = if block_outline_drawn(
@@ -12207,45 +12104,6 @@ impl Game<'_> {
             self.shows_panorama(),
         ) && !self.touch_hides_outline()
         {
-            self.pick()
-                .filter(|h| {
-                    self.may_build()
-                        || !self.block_action_restricted(h.pos)
-                        || self.can_place_on_in_adventure(h.pos)
-                })
-                .filter(|h| {
-                    let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
-                    let mut canceled = false;
-                    self.native_block_highlight(h.pos, state, alpha as f32, &mut canceled);
-                    !canceled
-                })
-                .map(|h| {
-                    let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
-                    outline_after_terrain = self
-                        .pack
-                        .render
-                        .model_catalog
-                        .collect(state, BlockPos::new(h.pos[0], h.pos[1], h.pos[2]))
-                        .is_ok_and(|models| {
-                            models
-                                .iter()
-                                .any(|(_, model)| model.faces.iter().any(|f| f.translucent))
-                        });
-                    self.outline_edges_iter(state, h.pos).collect()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-||||||| 46c00106def
-        let adventure = self.mode == sunrise_client::command::args::GameMode::Adventure;
-        let can_build = self.may_build() || adventure;
-        let outline = if block_outline_drawn(
-            self.ui.hide_gui,
-            self.entity_targeted(),
-            can_build,
-            self.shows_panorama(),
-        ) {
             self.pick()
                 .filter(|h| {
                     self.may_build()
@@ -12300,7 +12158,7 @@ impl Game<'_> {
                 self.outline_edges_iter(state, h.pos).collect()
             })
             .unwrap_or_default();
->>>>>>> ed6772e2118
+>>>>>>> theirs
         pr.lap("pr_outline");
         let title = self.shows_panorama();
         let (yaw, pitch, roll) = if title {
@@ -12346,13 +12204,11 @@ impl Game<'_> {
         let distance = (terrain_distance * 16) as f32;
         let depth_far =
             sunrise_client::camera::depth_far(terrain_distance, self.settings.cloud_range);
-<<<<<<< HEAD
+<<<<<<< ours
         // Only native mods read it: no matrices or allocation per frame without one.
         // Starling: and the mods made for Sunrise's own API (`native_camera`,
         // starling/native_compat.rs), which that list doesn't hold.
         let mods_read_camera = true;
-||||||| 46c00106def
-        let mods_read_camera = !mod_api::__private::mods().is_empty();
 =======
         let view_transform = if camera_effects
             && self.player.is_some()
@@ -12375,7 +12231,7 @@ impl Game<'_> {
         };
         // The pose the camera, GUI and hand see: the vanilla bob, then the mod's transform.
         let posed_bob = bob * view_transform;
->>>>>>> ed6772e2118
+>>>>>>> theirs
         self.screen_blur_requested.set(false);
         // GUI and world hooks read the same frame snapshot. Keep its dimension allocation
         // between frames rather than formatting another copy for the world renderer.
@@ -12517,14 +12373,8 @@ impl Game<'_> {
         // Retain the existing additive particle stream; the ordered dragon emitter appends
         // the eyes and rays to it without changing their material routing.
         let mut additive = self.particles.take_additive();
-<<<<<<< HEAD
         if !title && !kept_menu {
-||||||| 46c00106def
-        if !title {
-=======
-        if !title {
             self.frame_batch_reserved_quads.set(additive.len() / 4);
->>>>>>> ed6772e2118
             let (built, static_sections, visible_static_sections, static_stats) =
                 spans::time("entity_geometry", || {
                     self.entity_geometry(camera, alpha, billboard_frustum, entities, &mut additive)
@@ -13545,18 +13395,15 @@ impl Game<'_> {
                 true
             }
             Screen::Creative => {
-<<<<<<< HEAD
+<<<<<<< ours
                 let released = left && self.creative_screen.release();
                 let taken = self.inventory_mouse_release(!left) || released;
                 // Starling: Bedrock Inventory's window follows the pointer again.
                 self.bedrock_held = false;
                 taken
-||||||| 46c00106def
-                let released = left && self.creative_screen.release();
-                self.inventory_mouse_release(!left) || released
 =======
                 self.inventory_mouse_release(!left) || (left && self.creative_screen.release())
->>>>>>> ed6772e2118
+>>>>>>> theirs
             }
             Screen::Paused if left_press && self.pause_menu => self.pause_click()?,
             Screen::WorldOptions if left_press => self.world_options_click(),
@@ -13765,17 +13612,11 @@ impl Game<'_> {
                         if delta != [0.0; 2]
                             && let Some(button) = button
                         {
-<<<<<<< HEAD
+<<<<<<< ours
                             title.drag(self.cursor, (w, h));
                             title.drag_field(&self.gui.atlas, self.cursor.0);
                         }
                         self.drag_title_player();
-                        if self.dragging && self.screen == Screen::Options {
-                            self.options_drag()?;
-||||||| 46c00106def
-                            title.drag(self.cursor, (w, h));
-                            title.drag_field(&self.gui.atlas, self.cursor.0);
-                        }
                         if self.dragging && self.screen == Screen::Options {
                             self.options_drag()?;
 =======
@@ -13796,7 +13637,7 @@ impl Game<'_> {
                             if let Some(post) = mouse_post.as_mut() {
                                 post.handled = handled;
                             }
->>>>>>> ed6772e2118
+>>>>>>> theirs
                         }
                     }
                 }
@@ -13901,25 +13742,10 @@ impl Game<'_> {
                     let mut screen_scrolled = false;
                     let stick_scroll = self.pad_stick_scroll();
                     let step_scroll = self.pad_step_scroll();
-<<<<<<< HEAD
+<<<<<<< ours
                     if self.title_input_active() && self.screen != Screen::Win {
                         let gui = self.gui_size();
                         let title = self.title.as_mut().expect("title input is active");
-||||||| 46c00106def
-                    if self.title_input_active()
-                        && self.screen != Screen::Win
-                        && let Some(title) = &mut self.title
-                    {
-                        let size = self
-                            .window
-                            .as_ref()
-                            .map(|w| w.inner_size())
-                            .unwrap_or_default();
-                        let batch = HudBatch::new(
-                            [size.width, size.height],
-                            self.settings.gui_scale_inputs(),
-                        );
-                        let gui = (batch.width, batch.height);
 =======
                     if self.screen == Screen::Playing
                         && let Some(title) = &mut self.title
@@ -13934,7 +13760,7 @@ impl Game<'_> {
                             self.settings.gui_scale_inputs(),
                         );
                         let gui = (batch.width, batch.height);
->>>>>>> ed6772e2118
+>>>>>>> theirs
                         if step_scroll {
                             title.step_scroll(d, self.cursor, gui);
                         } else if stick_scroll {
@@ -13966,7 +13792,7 @@ impl Game<'_> {
                         };
                         self.hotbar_wheel_step(wheel, vertical_steps);
                     }
-<<<<<<< HEAD
+<<<<<<< ours
                     if self.screen == Screen::Chat && d != 0.0 {
                         self.chat_scroll(d);
                     }
@@ -13978,18 +13804,6 @@ impl Game<'_> {
                     }
                     if self.screen == Screen::Options && d != 0.0 {
                         self.options_scroll(d, finger)?;
-||||||| 46c00106def
-                    if self.screen == Screen::Chat && d != 0.0 {
-                        self.chat_scroll(d);
-                    }
-                    if self.screen == Screen::Social && d != 0.0 {
-                        self.social_scroll(d);
-                    }
-                    if self.screen == Screen::CommandBlock && d != 0.0 {
-                        self.command_block_scroll(d);
-                    }
-                    if self.screen == Screen::Options && d != 0.0 {
-                        self.options_scroll(d)?;
 =======
                     match self.screen {
                         // ChatScreen.mouseScrolled always takes the wheel.
@@ -14001,7 +13815,7 @@ impl Game<'_> {
                         Screen::CommandBlock => screen_scrolled |= self.command_block_scroll(d),
                         Screen::Options => screen_scrolled |= self.options_scroll(d)?,
                         _ => {}
->>>>>>> ed6772e2118
+>>>>>>> theirs
                     }
                     // AbstractContainerScreen.mouseScrolled: a bundle under the
                     // cursor takes the wheel before the screen's own scrolling.
@@ -14319,16 +14133,10 @@ impl Game<'_> {
                         sunrise_client::spans::FrameRecording::block_entity_work,
                     );
                     drop(flight_spans);
-<<<<<<< HEAD
-                    let mut perf_times = None;
+                    let mut own_work = None;
                     let mut diagnostic_sample = None;
                     // Starling: the frame for the performance test's averages (perf_lab.rs).
                     let mut lab_sample = None;
-||||||| 46c00106def
-                    let mut perf_times = None;
-=======
-                    let mut own_work = None;
->>>>>>> ed6772e2118
                     if let Some(r) = self.renderer.as_mut() {
                         let cpu = now.elapsed().saturating_sub(r.last_wait);
                         sunrise_threads::work::tick_end(cpu.as_nanos() as u64);
@@ -14340,15 +14148,12 @@ impl Game<'_> {
                         };
                         own_work = Some((ms(cpu), gpu));
                         if rendered {
-<<<<<<< HEAD
+<<<<<<< ours
                             let ms = |d: Duration| d.as_secs_f32() * 1000.0;
                             lab_sample = Some((ms(elapsed), ms(cpu), r.gpu_times.last().copied()));
                             perf_times = Some((ms(cpu), r.gpu_times.last().copied()));
-||||||| 46c00106def
-                            let ms = |d: Duration| d.as_secs_f32() * 1000.0;
-                            perf_times = Some((ms(cpu), r.gpu_times.last().copied()));
 =======
->>>>>>> ed6772e2118
+>>>>>>> theirs
                             let g = &self.settings.sunrise;
                             // The scale while Dynamic Resolution moves it on its own.
                             let dynamic_scale = g
@@ -14441,7 +14246,6 @@ impl Game<'_> {
                         r.gpu_times.clear();
                         self.platform_frame_hint(rendered, cpu);
                     }
-<<<<<<< HEAD
                     if let Some(sample) = diagnostic_sample {
                         let context = self.diagnostic_context();
                         crate::performance::submit(sample, context);
@@ -14451,12 +14255,7 @@ impl Game<'_> {
                         self.stats_frame(frame, cpu, gpu);
                     }
                     self.perf_lab_frame(lab_sample);
-                    self.limit_frame();
-||||||| 46c00106def
-                    self.limit_frame();
-=======
                     self.limit_frame(limit);
->>>>>>> ed6772e2118
                     let paused = self.pauses_game();
                     if paused != self.pause {
                         let mut cancel = false;
@@ -15601,12 +15400,11 @@ impl<'a> Game<'a> {
             }),
             skin_profiles: RefCell::new(sunrise_client::skins::Resolver::new()),
             skin_slots: sunrise_client::skins::SkinSlots::new(sunrise_client::hud::SKIN_SLOTS),
-<<<<<<< HEAD
+<<<<<<< ours
             own_skin: Default::default(),
-||||||| 46c00106def
 =======
             player_skin_slot: None,
->>>>>>> ed6772e2118
+>>>>>>> theirs
             trim_slots: Default::default(),
             cart_models: prepared.cart_models,
             riding: None,
@@ -15972,7 +15770,6 @@ pub(crate) fn run_with(
     sunrise_world::datafix::set_resources(
         &std::path::absolute(&vanilla_root).unwrap_or_else(|_| vanilla_root.clone()),
     );
-<<<<<<< HEAD
     // Starling (#474): resources from an older preparer are prepared again, not half loaded.
     #[cfg(target_os = "android")]
     if options.execution_role.is_client() {
@@ -15980,24 +15777,6 @@ pub(crate) fn run_with(
     }
     // Android has no launcher to start from: the setup screen asks for the game files instead.
     #[cfg(not(target_os = "android"))]
-    if let Some(error) = missing_resources(&vanilla_root, sunrise_hooks::engine::get_the_game()) {
-        // The game build started by hand (the release's zip), not by the
-        // launcher: a window says where to get it. Scripts and servers get
-        // the error.
-        if !options.offscreen && !synchronous_startup(&options) {
-            log::error!("Sunrise: {error}");
-            let settings = Settings::load(&Game::options_path());
-            return no_resources::show(&vanilla_root, &settings);
-||||||| 46c00106def
-    if let Some(error) = missing_resources(&vanilla_root, sunrise_hooks::engine::get_the_game()) {
-        // The game build started by hand (the release's zip), not by the
-        // launcher: a window says where to get it. Scripts and servers get
-        // the error.
-        if !options.offscreen && !synchronous_startup(&options) {
-            log::error!("Sunrise: {error}");
-            let settings = Settings::load(&Game::options_path());
-            return no_resources::show(&vanilla_root, &settings);
-=======
     let preparation = match preflight_resources(
         &vanilla_root,
         sunrise_hooks::engine::get_the_game(),
@@ -16018,9 +15797,8 @@ pub(crate) fn run_with(
                 return no_resources::show(&vanilla_root, &settings);
             }
             return Err(error.into());
->>>>>>> ed6772e2118
         }
-<<<<<<< HEAD
+<<<<<<< ours
         return Err(error.into());
     }
     // Bedrock's touch buttons, fetched from Mojang once (bedrock_touch.rs) where the resources
@@ -16075,14 +15853,10 @@ pub(crate) fn run_with(
             }
         }
     }
-||||||| 46c00106def
-        return Err(error.into());
-    }
-    let mut early_settings = Settings::load(&Game::options_path());
 =======
     };
     let mut early_settings = Settings::load(&Game::options_path());
->>>>>>> ed6772e2118
+>>>>>>> theirs
     options
         .mods
         .capture_code_switches(&early_settings.mods.disabled);
@@ -16264,19 +16038,13 @@ pub(crate) fn run_with(
     )?;
     let gui = loaded.gui.ok_or("missing menu bundle")?;
     options.resources = loaded.root.clone();
-<<<<<<< HEAD
     // Starling: a phone's setup before 0.1.6 left the sounds out.
     sunrise_client::preparer::complete_sounds(&vanilla_root);
     // Starling: the prepared resources loaded, the files they came from can go.
     sunrise_client::preparer::drop_downloads(&vanilla_root);
-    let audio = if !options.execution_role.is_client() || options.headless {
-||||||| 46c00106def
-    let audio = if !options.execution_role.is_client() || options.headless {
-=======
     let audio = if options.execution_role.is_dedicated_server() {
         Audio::for_server()
     } else if !options.execution_role.is_client() || options.headless {
->>>>>>> ed6772e2118
         Audio::silent(&loaded.pack.source)
     } else {
         Audio::with_device(&loaded.pack.source, &early_settings.sound_device)

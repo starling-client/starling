@@ -111,15 +111,9 @@ READERS = {
     "sunrise-server": [
         "crates/sunrise-theme/fonts", "crates/sunrise-theme/icons", "docs/api/server-reference.md",
     ],
-<<<<<<< HEAD
-    "sunrise-shader-api": ["docs/api/shaders-reference.md", "docs/api/shaders-reference-0.2.md"],
     # Starling's own crates: the account tests read the research lock, the catalog its launcher's sources.
     "starling-account": ["research-lock.json"],
     "starling-catalog": ["launcher/src"],
-||||||| 46c00106def
-    "sunrise-shader-api": ["docs/api/shaders-reference.md", "docs/api/shaders-reference-0.2.md"],
-=======
->>>>>>> ed6772e2118
     # Its daily stable-release test drives the release gate's Python through the real surface differ.
     "sunrise-stage": [
         "tests/stable_mod_api_integration.py", "tests/test_stable_mod_api.py", "tools/ci/nightly.py",
@@ -138,16 +132,14 @@ SCANNED = {"sunrise-client-core": ["crates"]}
 # Literals the scan takes for a walk up to crates/ that are not one (a ".." among path-traversal checks).
 # "machines/.." in a test's sample paths, "mods/" in an instance's file names: no read either.
 NOT_READS = {
-<<<<<<< HEAD
+<<<<<<< ours
     "sunrise-android": {"crates"}, "sunrise-client": {"crates"}, "sunrise-client-lib": {"crates"}, "sunrise-mod-package": {"crates"},
-||||||| 46c00106def
-    "sunrise-client": {"crates"}, "sunrise-client-lib": {"crates"}, "sunrise-mod-package": {"crates"},
 =======
     "sunrise-client": {"crates"}, "sunrise-client-lib": {"crates"}, "sunrise-parity-fixtures": {"crates"},
     "sunrise-mod-package": {"crates"},
     # The retained-SDK test writes a synthetic render.rs into its temporary archive, not this checkout.
     "cargo-sunrise-mod": {"crates/sunrise-mod-render/src/render.rs"},
->>>>>>> ed6772e2118
+>>>>>>> theirs
     "sunrise-mod-vocab": {"."}, "sunrise-port-pack": {"mods"}, "sunrise-prepare": {"crates"},
     # A package's source-file names (`package::source_files`), never this checkout's lock.
     "sunrise-mod-source": {"Cargo.lock"},

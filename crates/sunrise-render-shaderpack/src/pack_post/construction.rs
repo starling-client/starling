@@ -573,7 +573,7 @@ pub struct Geometry<'a> {
     pub ids: Option<&'a wgpu::BindGroupLayout>,
     /// Back faces are culled, as for the game's own terrain.
     pub cull: bool,
-<<<<<<< HEAD
+<<<<<<< ours
     /// Drawn twice (`prepass`): depth only first, then the program over what stays in front.
     pub prepass: bool,
 }
@@ -583,13 +583,12 @@ pub struct Geometry<'a> {
 fn used_groups<T>(groups: &[Option<T>]) -> &[Option<T>] {
     let used = groups.iter().rposition(Option::is_some);
     &groups[..used.map_or(0, |last| last + 1)]
-||||||| 46c00106def
 =======
     /// Terrain whose program reads its arena page at set 3
     /// (`pack_atlas::TerrainDraws::reads_pages`): its passes get set 3's layout (`ids`), and each
     /// page's group before its draws.
     pub pages: bool,
->>>>>>> ed6772e2118
+>>>>>>> theirs
 }
 
 /// What a pack brings besides its programs: custom textures, images and storage buffers.
@@ -1431,16 +1430,11 @@ pub fn build_pass(
             blend: None,
             write_mask: wgpu::ColorWrites::empty(),
         })];
-<<<<<<< HEAD
     } else if !final_pass
         && writes.is_empty()
         && !sink
         && (geometry.is_none() || p.group != Group::Shadow)
     {
-||||||| 46c00106def
-    } else if !final_pass && writes.is_empty() && !sink {
-=======
-    } else if !final_pass && writes.is_empty() && !sink {
         // It draws nothing a later program could see: its compute stages and forced flips are
         // all it does, and the caller drops it when it has neither.
         if geometry.is_none() {
@@ -1453,7 +1447,6 @@ pub fn build_pass(
                 !interface.buffers.is_empty(),
             ));
         }
->>>>>>> ed6772e2118
         notes.push(format!("{}: writes no buffer; skipped", p.name));
         return None;
     }
@@ -1475,7 +1468,7 @@ pub fn build_pass(
             label: Some(&p.name),
             entries: &entries,
         });
-<<<<<<< HEAD
+<<<<<<< ours
         let groups = [
             Some(&layout),
             geometry.and_then(|g| g.table),
@@ -1484,7 +1477,6 @@ pub fn build_pass(
             (!interface.buffers.is_empty()).then_some(&pack.buffers.layout),
             pack.indices.filter(|_| reads_indices),
         ];
-||||||| 46c00106def
 =======
         let mut sets = vec![
             Some(&layout),
@@ -1499,23 +1491,14 @@ pub fn build_pass(
             sets.push(Some(&stage.globals_layout));
             sets.extend(stage.set1_layout.as_ref().map(Some));
         }
->>>>>>> ed6772e2118
+>>>>>>> theirs
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(&p.name),
-<<<<<<< HEAD
+<<<<<<< ours
             bind_group_layouts: used_groups(&groups),
-||||||| 46c00106def
-            bind_group_layouts: &[
-                Some(&layout),
-                geometry.and_then(|g| g.table),
-                draw.then_some(draws),
-                geometry.and_then(|g| g.ids),
-                (!interface.buffers.is_empty()).then_some(&pack.buffers.layout),
-                pack.indices.filter(|_| reads_indices),
-            ],
 =======
             bind_group_layouts: &sets,
->>>>>>> ed6772e2118
+>>>>>>> theirs
             ..Default::default()
         });
         let module = |mut m: naga::Module| {
@@ -1697,13 +1680,11 @@ pub fn build_pass(
             polygon_offset,
         )
     });
-<<<<<<< HEAD
+<<<<<<< ours
     let (layout, pipeline, sky_parts, prepass, water_mask) = match created {
-||||||| 46c00106def
-    let (layout, pipeline, sky_parts, water_mask) = match created {
 =======
     let (layout, pipeline, sky_parts, water_mask, polygon_offset) = match created {
->>>>>>> ed6772e2118
+>>>>>>> theirs
         Ok(created) => created,
         Err(e) => {
             notes.push(format!("{}: skipped: {e}", p.name));
@@ -2658,7 +2639,7 @@ impl PackPost {
             material_maps: g.material_maps,
             ids: block_ids.as_ref().map(|i| &i.0),
             cull: g.cull,
-<<<<<<< HEAD
+<<<<<<< ours
             prepass: false,
         });
         let solid_geometry = world.terrain.as_ref().map(|g| Geometry {
@@ -2670,10 +2651,9 @@ impl PackPost {
             ids: block_ids.as_ref().map(|i| &i.0),
             cull: g.cull,
             prepass: prepass_wanted(),
-||||||| 46c00106def
 =======
             pages: g.pages,
->>>>>>> ed6772e2118
+>>>>>>> theirs
         });
         let split = post.terrain.is_some() && post.terrain_cutout.is_some();
         let (terrain_undrawn, water_undrawn) = (post.terrain_undrawn, post.water_undrawn);
@@ -2699,12 +2679,11 @@ impl PackPost {
             material_maps: g.material_maps,
             ids: g.ids,
             cull: false,
-<<<<<<< HEAD
+<<<<<<< ours
             prepass: false,
-||||||| 46c00106def
 =======
             pages: g.pages,
->>>>>>> ed6772e2118
+>>>>>>> theirs
         });
         let shadow_terrain = post
             .shadow
@@ -2737,12 +2716,11 @@ impl PackPost {
                 material_maps: false,
                 ids: None,
                 cull: false,
-<<<<<<< HEAD
+<<<<<<< ours
                 prepass: false,
-||||||| 46c00106def
 =======
                 pages: false,
->>>>>>> ed6772e2118
+>>>>>>> theirs
             };
             let basic = post.sky.and_then(|p| build(p, Some(&basic)));
             let textured = Geometry {
@@ -2753,12 +2731,11 @@ impl PackPost {
                 material_maps: false,
                 ids: None,
                 cull: false,
-<<<<<<< HEAD
+<<<<<<< ours
                 prepass: false,
-||||||| 46c00106def
 =======
                 pages: false,
->>>>>>> ed6772e2118
+>>>>>>> theirs
             };
             let textured = post.sky_textured.and_then(|p| build(p, Some(&textured)));
             Sky {
@@ -2810,12 +2787,11 @@ impl PackPost {
             material_maps: false,
             ids: None,
             cull: false,
-<<<<<<< HEAD
+<<<<<<< ours
             prepass: false,
-||||||| 46c00106def
 =======
             pages: false,
->>>>>>> ed6772e2118
+>>>>>>> theirs
         });
         // Programs drawing the shared atlas's geometry read its paged maps (`pack_entities::inputs`).
         let paged = |pass: Option<Pass>| {
@@ -2845,12 +2821,11 @@ impl PackPost {
                         material_maps: g.material_maps,
                         ids: g.ids,
                         cull: false,
-<<<<<<< HEAD
+<<<<<<< ours
                         prepass: false,
-||||||| 46c00106def
 =======
                         pages: g.pages,
->>>>>>> ed6772e2118
+>>>>>>> theirs
                     };
                     paged(build(p, Some(&decal)))
                 } else {
@@ -2886,12 +2861,11 @@ impl PackPost {
             material_maps: false,
             ids: None,
             cull: false,
-<<<<<<< HEAD
+<<<<<<< ours
             prepass: false,
-||||||| 46c00106def
 =======
             pages: false,
->>>>>>> ed6772e2118
+>>>>>>> theirs
         });
         let hides_clouds = post.clouds_off || post.clouds.is_some() && cloud_geometry.is_some();
         // Rain and snow test depth but never write it: Iris 1.11.7 left none of either in
@@ -2904,12 +2878,11 @@ impl PackPost {
             material_maps: false,
             ids: None,
             cull: false,
-<<<<<<< HEAD
+<<<<<<< ours
             prepass: false,
-||||||| 46c00106def
 =======
             pages: false,
->>>>>>> ed6772e2118
+>>>>>>> theirs
         });
         let hand_geometry = world
             .hand
@@ -2923,12 +2896,11 @@ impl PackPost {
                 material_maps: false,
                 ids: None,
                 cull: false,
-<<<<<<< HEAD
+<<<<<<< ours
                 prepass: false,
-||||||| 46c00106def
 =======
                 pages: false,
->>>>>>> ed6772e2118
+>>>>>>> theirs
             };
             paged(build(p, Some(&g))).map(|pass| (pass, geometry))
         });
@@ -2943,12 +2915,11 @@ impl PackPost {
                 material_maps: false,
                 ids: None,
                 cull: false,
-<<<<<<< HEAD
+<<<<<<< ours
                 prepass: false,
-||||||| 46c00106def
 =======
                 pages: false,
->>>>>>> ed6772e2118
+>>>>>>> theirs
             };
             paged(build(p, Some(&g)))
         });
@@ -2977,12 +2948,11 @@ impl PackPost {
             material_maps: false,
             ids: None,
             cull: false,
-<<<<<<< HEAD
+<<<<<<< ours
             prepass: false,
-||||||| 46c00106def
 =======
             pages: false,
->>>>>>> ed6772e2118
+>>>>>>> theirs
         };
         let lines = post.lines.and_then(|p| build(p, Some(&line_geometry)));
         // Build mod-declared pipeline passes that resolved to a pack program.

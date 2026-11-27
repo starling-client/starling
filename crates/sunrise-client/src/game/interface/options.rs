@@ -213,15 +213,9 @@ impl Game<'_> {
     pub(super) fn open_options(&mut self, from_title: bool) {
         self.open_options_at(from_title, Page::Main);
     }
-<<<<<<< HEAD
-    pub(super) fn open_options_at(&mut self, from_title: bool, page: Page) {
+    pub(in crate::game) fn open_options_at(&mut self, from_title: bool, page: Page) {
         #[cfg(target_os = "android")]
         self.mobile_options_open();
-||||||| 46c00106def
-    pub(super) fn open_options_at(&mut self, from_title: bool, page: Page) {
-=======
-    pub(in crate::game) fn open_options_at(&mut self, from_title: bool, page: Page) {
->>>>>>> ed6772e2118
         // Gameplay keys must not stay held behind the options screen, where
         // bindings can also change before the physical key is released.
         self.clear_device_keys();
@@ -451,16 +445,14 @@ impl Game<'_> {
             .options
             .shortcut(&self.gui.atlas, shortcut, &mut self.clipboard)
     }
-<<<<<<< HEAD
+<<<<<<< ours
     /// The wheel on the options. A finger's scroll (`finger`) only scrolls: a list moved by a
     /// finger that landed on a cycle button must not cycle it at each step, as a mouse wheel over it
     /// does (`CycleButton.mouseScrolled`).
     pub(super) fn options_scroll(&mut self, amount: f32, finger: bool) -> Result<()> {
-||||||| 46c00106def
-    pub(super) fn options_scroll(&mut self, amount: f32) -> Result<()> {
 =======
     pub(super) fn options_scroll(&mut self, amount: f32) -> Result<bool> {
->>>>>>> ed6772e2118
+>>>>>>> theirs
         if self.pad_stick_scroll() {
             let size = self.gui_size();
             self.ui
@@ -480,19 +472,13 @@ impl Game<'_> {
             return Ok(true);
         }
         let size = self.gui_size();
-<<<<<<< HEAD
         if finger {
             self.ui
                 .options
                 .scroll_at(&self.settings, size, self.cursor, amount);
             return Ok(());
         }
-        let events =
-||||||| 46c00106def
-        let events =
-=======
         let (handled, events) =
->>>>>>> ed6772e2118
             self.ui
                 .options
                 .wheel_input(&mut self.settings, size, self.cursor, framebuffer, amount);
@@ -511,19 +497,13 @@ impl Game<'_> {
     pub(in crate::game) fn handle_option_events(&mut self, events: Vec<Event>) -> Result<()> {
         for e in events {
             match e {
-<<<<<<< HEAD
                 Event::DiagnosticsExport => self.export_diagnostics(),
                 Event::DiagnosticsOpen => self.open_diagnostics(),
                 Event::DiagnosticsRecord => self.toggle_diagnostic_recording(),
                 Event::DiagnosticsGpu => self.toggle_diagnostic_gpu(),
                 Event::PerfLab(i) => self.perf_lab_next(i),
                 Event::Calibrate(i) => self.perf_calibrate_button(i),
-                Event::ButtonClick => self.audio.play_button_click(),
-||||||| 46c00106def
-                Event::ButtonClick => self.audio.play_button_click(),
-=======
                 Event::ButtonClick => self.play_audio_button_click(),
->>>>>>> ed6772e2118
                 Event::DebugEntriesChanged => self.debug_entries.invalidate(),
                 Event::Changed => {
                     #[cfg(target_os = "android")]
@@ -661,7 +641,7 @@ impl Game<'_> {
                 Event::ImportButtonImage(id) => self.pick_button_image(id),
                 Event::OpenShaderOptions => self.open_shader_options(),
                 Event::ShaderOptions => self.save_shader_options(),
-<<<<<<< HEAD
+<<<<<<< ours
                 Event::NativePackOptions(i) => {
                     if let Some(pack) = self.settings.shader_packs.get(i) {
                         pack.save_values(&Self::shader_packs_dir());
@@ -674,22 +654,12 @@ impl Game<'_> {
                 Event::RestartGame => {
                     #[cfg(target_os = "android")]
                     crate::android::restart_app();
-||||||| 46c00106def
-                Event::NativePackOptions(i) => {
-                    if let Some(pack) = self.settings.shader_packs.get(i) {
-                        pack.save_values(&Self::shader_packs_dir());
-                    }
-                }
-                Event::OpenShaderPackFolder => {
-                    let dir = Self::shader_packs_dir();
-                    let _ = std::fs::create_dir_all(&dir);
-                    super::packs::open_folder(&dir);
 =======
                 Event::OpenShaderPackFolder => {
                     let dir = Self::shader_packs_dir();
                     let _ = std::fs::create_dir_all(&dir);
                     super::packs::open_folder(&dir);
->>>>>>> ed6772e2118
+>>>>>>> theirs
                 }
                 Event::NativeSettings(i) => self.native_settings_refresh(i),
                 Event::ModConfigScreen(i) => {
@@ -1021,19 +991,13 @@ impl Game<'_> {
             .settings
             .sunrise
             .battery_limit(limit, self.title.is_none(), self.focused);
-<<<<<<< HEAD
         // Starling: a phone's menu over the world draws at most 60 frames a second
         // (`menu_frame_cap`). No `cfg` here: dynamic_fps_for_rust hooks this function, and
         // horizon-mixins refuses a target body with one.
         let limit = menu_frame_cap(limit, context.has_screen);
-        // A native mod may only lower it (`native_framerate_limit`).
-||||||| 46c00106def
-        // A native mod may only lower it (`native_framerate_limit`).
-=======
         // A native mod's answer takes its place, raised to at most unlimited (260) or
         // lowered, 0 skipping the frame's render; below 0 keeps the game's own
         // (`native_framerate_limit`).
->>>>>>> ed6772e2118
         let mut hooked = limit;
         self.native_framerate_limit(
             mod_focus(self.focused),

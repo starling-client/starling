@@ -58,19 +58,14 @@ impl Game<'_> {
             // `title_edit` types into it).
             return title.has_caret_field() || title.focused_field().is_some();
         }
-<<<<<<< HEAD
+<<<<<<< ours
         if self.sign_edit.is_some() || matches!(self.book, Some(BookScreen::Edit { .. })) {
             return true;
         }
         let focused = match self.screen {
-||||||| 46c00106def
-        if self.sign_edit.is_some() || matches!(self.book, Some(BookScreen::Edit { .. })) {
-            return true;
-        }
-        match self.screen {
 =======
         match self.screen {
->>>>>>> ed6772e2118
+>>>>>>> theirs
             Screen::Chat | Screen::CommandBlock | Screen::Social => true,
             Screen::DebugOptions => self
                 .debug_options
@@ -138,16 +133,11 @@ impl Game<'_> {
     /// Allow the input method only while a text box has focus, and reset
     /// composition whenever the focused text box itself changes.
     pub(super) fn sync_ime(&mut self) {
-<<<<<<< HEAD
         // On Android asking for the input method shows the keyboard: there a tap on the field
         // decides (touch.rs), not its focus.
         if cfg!(target_os = "android") {
             return;
         }
-        let want = self.text_field_focused() || self.preset_editor_title().is_some();
-||||||| 46c00106def
-        let want = self.text_field_focused() || self.preset_editor_title().is_some();
-=======
         let focus = self.ime_focus_identity();
         let want = focus.is_some();
         if focus != self.screen_state.ime_focus {
@@ -155,7 +145,6 @@ impl Game<'_> {
             self.ime_area = None;
             preedit::reset();
         }
->>>>>>> ed6772e2118
         if want != self.ime_allowed
             && let Some(window) = &self.window
         {

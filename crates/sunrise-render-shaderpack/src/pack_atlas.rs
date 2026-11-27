@@ -1061,18 +1061,14 @@ impl PackAtlas {
             scale[0], scale[1],
         );
         let mut body = body;
-<<<<<<< HEAD
+<<<<<<< ours
         // Developers' aid: `SUNRISE_SHADER_PACK_NO_FACE=1` leaves the faces' normal and tangent
         // out (wrong lighting), to time what working them out per vertex costs.
         if flat && std::env::var_os("SUNRISE_SHADER_PACK_NO_FACE").is_none() {
             body.insert_str(0, PULL_FLAT);
-||||||| 46c00106def
-        if flat {
-            body.insert_str(0, PULL_FLAT);
 =======
         if draws == TerrainDraws::Pages {
             body.insert_str(0, PULL_CORNERS);
->>>>>>> ed6772e2118
             body.push_str(FACE);
             body.push_str(SOURCE);
         }
@@ -1081,6 +1077,7 @@ impl PackAtlas {
         }
         if flat {
             body.insert_str(0, &format!("{PULL_CORNERS}{PULL_FLAT}"));
+>>>>>>> theirs
             body.push_str(FACE);
             body.push_str(MID);
             body.push_str(SOURCE);
@@ -1089,7 +1086,6 @@ impl PackAtlas {
             "vec2 hz_cell; vec2 hz_scale; vec2 hz_mid; float hz_uv_scale; vec4 hz_tangent;
 ",
         );
-<<<<<<< HEAD
         let mut after = String::new();
         let prepass_uv = super::pack_post::prepass_wanted();
         if prepass_uv {
@@ -1098,14 +1094,9 @@ impl PackAtlas {
 ",
             );
         }
-        let entity = if flat {
-||||||| 46c00106def
-        let entity = if flat {
-=======
         // Every draw that reaches its quad's source (`SOURCE`, `NORMALS`).
         let sourced = draws != TerrainDraws::Attributes;
         let entity = if sourced {
->>>>>>> ed6772e2118
             "vec4(float(hz_material), hz_known_source ? float((hz_source.y >> 12u) & 1u) : 0.0, 0.0, 0.0)"
         } else {
             "vec4(-1.0, 0.0, 0.0, 0.0)"

@@ -682,19 +682,13 @@ impl OptionsUi {
             // Drawn by `pack_screen` and `mods_screen`.
             Page::Packs | Page::Mods => {}
             _ => {
-<<<<<<< HEAD
                 let wardrobe = self.wardrobe_columns(w);
                 let (list_left, list_w) = wardrobe
                     .map_or((cx - 155.0, 310.0), |(x, preview, list)| {
                         (x + preview + 12.0, list)
                     });
                 let pair_w = (list_w - 10.0) / 2.0;
-                if matches!(page, Page::Video | Page::Controls | Page::ModBrowser) {
-||||||| 46c00106def
-                if matches!(page, Page::Video | Page::Controls | Page::ModBrowser) {
-=======
                 if matches!(page, Page::Video | Page::Controls) {
->>>>>>> ed6772e2118
                     top = 38.0;
                 }
                 out.push(Widget {
@@ -714,7 +708,7 @@ impl OptionsUi {
                     list: false,
                     row: 0,
                 });
-<<<<<<< HEAD
+<<<<<<< ours
                 if wardrobe.is_some() && self.wardrobe_saving() {
                     top = 33.0;
                     let center = (top + bottom) * 0.5;
@@ -772,7 +766,6 @@ impl OptionsUi {
                 } else {
                     (0.0, w)
                 };
-||||||| 46c00106def
 =======
                 // VideoSettingsScreen.addTitle: a changed graphics API needs a restart.
                 if page == Page::Video && s.sunrise.api != s.startup_api {
@@ -790,7 +783,7 @@ impl OptionsUi {
                         row: 0,
                     });
                 }
->>>>>>> ed6772e2118
+>>>>>>> theirs
                 let list_start = out.len();
                 let mut y = top + 2.0 - self.scroll;
                 for row in self.list_rows(s) {

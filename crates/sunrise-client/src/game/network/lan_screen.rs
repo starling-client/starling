@@ -15,17 +15,11 @@ use sunrise_client::{
     widgets::{self, Narratable, join_for_narration},
 };
 use sunrise_protocol::packets::play::{self, Serverbound as S};
-<<<<<<< HEAD
-use winit::{event::KeyEvent, keyboard::PhysicalKey};
+use winit::keyboard::KeyCode;
 #[path = "lan_screen/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
-||||||| 46c00106def
-use winit::{event::KeyEvent, keyboard::PhysicalKey};
-=======
-use winit::keyboard::KeyCode;
->>>>>>> ed6772e2118
 
 pub(super) struct WorldOptions {
     remote: bool,

@@ -72,12 +72,11 @@ pub mod inventory_effects;
 pub mod java_text;
 mod jei_sprites;
 pub mod jigsaw_block;
-<<<<<<< HEAD
+<<<<<<< ours
 pub mod keypad;
-||||||| 46c00106def
 =======
 pub mod mod_hooks;
->>>>>>> ed6772e2118
+>>>>>>> theirs
 pub mod moving_colliders;
 pub mod terrain_model;
 pub use sunrise_polytone::creative_tabs as polytone_creative_tabs;
@@ -169,15 +168,9 @@ mod sprite_cache;
 pub mod sprites;
 pub mod streaming;
 pub mod structure_block;
-<<<<<<< HEAD
-pub mod studio_ui;
-pub mod system_stats;
-||||||| 46c00106def
-pub mod studio_ui;
-=======
 pub(crate) mod studio_ui;
 pub(crate) mod sunrise_ui;
->>>>>>> ed6772e2118
+pub mod system_stats;
 pub mod tab_list;
 pub mod test_block;
 pub mod test_instance_block;

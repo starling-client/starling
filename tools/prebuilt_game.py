@@ -10,15 +10,9 @@ native trait mods against it with rustc alone, in seconds, without the game's so
                                                           # engine-<target>[-server].tar.xz, build-data.tar.xz
                                                           # and surface.json, in DIST; for the client side also
                                                           # tool-<target>.tar.xz (cargo-sunrise-mod); --stage-tool the
-<<<<<<< HEAD
-                                                          # sunrise-stage `build` compiled, instead of compiling it
-    python3 tools/prebuilt_game.py stage TARGET          # HEAD staged with replacement slots in TARGET/stage (Android)
-||||||| 46c00106def
-                                                          # sunrise-stage `build` compiled, instead of compiling it
-=======
                                                           # sunrise-stage `build` compiled, instead of compiling it;
                                                           # --programs also programs-<target>[-server].tar.xz
->>>>>>> ed6772e2118
+    python3 tools/prebuilt_game.py stage TARGET          # HEAD staged with replacement slots in TARGET/stage (Android)
     python3 tools/prebuilt_game.py tool DIST              # just this computer's tool-<target>.tar.xz, as `pack` makes it
                                                           # (the rolling mod-tool release, tools/ci/mod_tool.py)
     python3 tools/prebuilt_game.py gather LEGS DIST       # the release folder from every packing leg's DIST, once
@@ -1611,18 +1605,17 @@ def main() -> None:
     pack_parser.add_argument("--stage-tool", type=Path, help="the sunrise-stage binary to export the surface with")
     pack_parser.add_argument("--with-tool", action="store_true",
                              help="also pack the target's tool on a server leg (a server-only SDK no client leg completes)")
-<<<<<<< HEAD
+<<<<<<< ours
     # Starling's Android build: HEAD staged with its replacement slots and build data (`stage`), for the APK to be
     # built from, so mixin mods install their copies on the phone.
     stage_parser = commands.add_parser("stage")
     stage_parser.add_argument("target", type=Path, help="an exclusively owned folder; the staged source is TARGET/stage")
     stage_parser.add_argument("--widen", action="store_true", help="the game's crates fully public first (tools/android_widen.py)")
-||||||| 46c00106def
 =======
     pack_parser.add_argument("--programs", action="store_true",
                              help="also pack programs-<target>[-server].tar.xz: the player folder without the game "
                                   "program (needs the checkout's exporters/)")
->>>>>>> ed6772e2118
+>>>>>>> theirs
     tool_parser = commands.add_parser("tool")
     tool_parser.add_argument("dist", type=Path)
     gather_parser = commands.add_parser("gather")
@@ -1641,15 +1634,9 @@ def main() -> None:
     elif args.command == "start":
         start(args.out.resolve())
     elif args.command == "pack":
-<<<<<<< HEAD
-        pack(args.out.resolve(), args.dist.resolve(), args.stage_tool, args.with_tool)
+        pack(args.out.resolve(), args.dist.resolve(), args.stage_tool, args.with_tool, args.programs)
     elif args.command == "stage":
         print(stage(args.target.resolve(), widen=args.widen))
-||||||| 46c00106def
-        pack(args.out.resolve(), args.dist.resolve(), args.stage_tool, args.with_tool)
-=======
-        pack(args.out.resolve(), args.dist.resolve(), args.stage_tool, args.with_tool, args.programs)
->>>>>>> ed6772e2118
     elif args.command == "tool":
         pack_tool(args.dist.resolve())
     elif args.command == "gather":

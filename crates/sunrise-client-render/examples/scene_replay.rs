@@ -227,14 +227,8 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         (&zero[..], 1),
         Arc::new(Faces::colour([0, 0, 0, 255])),
         Some(prepared),
-<<<<<<< HEAD
         None,
-        None,
-||||||| 46c00106def
-        None,
-=======
         sunrise_client_render::gfx::RendererDevice::New,
->>>>>>> ed6772e2118
         settings.graphics_api(),
         settings.translucent_batching,
         (false, false),

@@ -1844,7 +1844,7 @@ dependencies = [
 ]
 
 [[package]]
-<<<<<<< HEAD
+<<<<<<< ours
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1860,7 +1860,6 @@ dependencies = [
  "png",
  "zune-core 0.5.3",
  "zune-jpeg 0.5.15",
-||||||| 46c00106def
 =======
 name = "ignore"
 version = "0.4.35"
@@ -1875,7 +1874,7 @@ dependencies = [
  "same-file",
  "walkdir",
  "winapi-util",
->>>>>>> ed6772e2118
+>>>>>>> theirs
 ]
 
 [[package]]
@@ -4763,15 +4762,9 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.10.9",
-<<<<<<< HEAD
- "socket2 0.6.5",
+ "socket2",
  "starling-account",
  "starling-catalog",
-||||||| 46c00106def
- "socket2 0.6.5",
-=======
- "socket2",
->>>>>>> ed6772e2118
  "sunrise-assets",
  "sunrise-bench",
  "sunrise-client-core",

@@ -1801,15 +1801,13 @@ pub enum Page {
     NativeGame,
     /// A page a crate registered (`sunrise_hooks::pages`): its index in `OptionsUi::pages`.
     Added(usize),
-<<<<<<< HEAD
+<<<<<<< ours
     /// Sunrise's shader packs, either kind (`shader_pack_list`): one on or none, and a
     /// `shaders/` pack's profile.
-||||||| 46c00106def
-    /// Sunrise's shader packs, either kind (`shader_pack_list`).
 =======
     /// Sunrise Settings at its Shaders page, which lists the shader packs (`shader_pack_list`), as
     /// `sunrise-ctl options shader-packs` opens it.
->>>>>>> ed6772e2118
+>>>>>>> theirs
     ShaderPacks,
     /// The picked pack's options: the shader screen (`shader_ui`) at the pack's main screen.
     ShaderOptions,
@@ -2103,16 +2101,10 @@ pub enum Event {
     /// Accessibility's Help link: confirm and open
     /// `CommonLinks.ACCESSIBILITY_HELP` over the options screen.
     AccessibilityHelp,
-<<<<<<< HEAD
     /// Android: a page's Catalog button (game/mod_catalog.rs).
     OpenCatalog(CatalogShelf),
-    /// The Shader Packs page opened: list `shaderpacks/` into `shader_packs`.
-||||||| 46c00106def
-    /// The Shader Packs page opened: list `shaderpacks/` into `shader_packs`.
-=======
     /// Sunrise Settings opened (its Shaders page lists the packs): list `shaderpacks/` into
     /// `shader_packs`.
->>>>>>> ed6772e2118
     ListShaderPacks,
     /// The Mods page opened: the native mods folder read again, for a mod copied in meanwhile.
     ListMods,
@@ -2130,7 +2122,7 @@ pub enum Event {
     ShaderOptions,
     /// Native mod `.0`'s page opened: the game reads its settings' kept values again.
     NativeSettings(usize),
-<<<<<<< HEAD
+<<<<<<< ours
     /// Close the options and edit the touch controls' layout over the world.
     TouchLayout,
     /// The Custom Buttons page opened: `Settings::custom_buttons` takes what the layout has.
@@ -2141,12 +2133,11 @@ pub enum Event {
     CustomImage(u32, Vec<u8>),
     /// Ask the system for a picture for a custom button.
     ImportButtonImage(u32),
-||||||| 46c00106def
 =======
     /// Config was pressed for native mod `.0`, which has its own config screen
     /// (`IConfigScreenFactory`): the game asks the mod to open it over this screen.
     ModConfigScreen(usize),
->>>>>>> ed6772e2118
+>>>>>>> theirs
     /// Setting `.1` of native mod `.0`'s page changed (`settings.mods`): the game keeps it and
     /// tells the mod (`setting_changed`).
     NativeSetting(usize, usize),
@@ -2225,7 +2216,7 @@ pub struct OptionsUi {
     language_choice: Option<String>,
     language_search: ui::EditBox,
     pub(crate) settings_search: ui::EditBox,
-<<<<<<< HEAD
+<<<<<<< ours
     /// What the custom button on its page sends.
     custom_send: ui::EditBox,
     /// The custom button on its page came from the touch editor's Add, and goes back there.
@@ -2238,15 +2229,8 @@ pub struct OptionsUi {
     pub mod_project: String,
     /// The line about mods that wait for a restart to switch, for Browse mods' message.
     pub mods_note: Option<String>,
-||||||| 46c00106def
-    /// Browse mods: the registry's projects, filled by the game.
-    pub mod_browser: crate::mod_browser::ModBrowser,
-    /// The project whose page is open (`Page::ModProject`).
-    pub mod_project: String,
-    /// The line about mods that wait for a restart to switch, for Browse mods' message.
-    pub mods_note: Option<String>,
 =======
->>>>>>> ed6772e2118
+>>>>>>> theirs
     /// The Mods screen (`Page::Mods`), made when the page opens.
     pub mods_screen: Option<crate::mods_screen::ModsScreen>,
     /// Sunrise's `packBrowser` extra: the pack screen's Add button.
@@ -2403,19 +2387,9 @@ impl Default for OptionsUi {
             language_choice: None,
             language_search: search,
             settings_search,
-<<<<<<< HEAD
             custom_send,
             back_to_editor: false,
             painter: Painter::default(),
-            mod_browser: Default::default(),
-            mod_project: String::new(),
-            mods_note: None,
-||||||| 46c00106def
-            mod_browser: Default::default(),
-            mod_project: String::new(),
-            mods_note: None,
-=======
->>>>>>> ed6772e2118
             mods_screen: None,
             pack_browser: false,
             pack_infos: Vec::new(),
@@ -3093,19 +3067,9 @@ impl OptionsUi {
             | Page::CustomPick(..)
             | Page::CustomDraw(_) => "Custom Buttons",
             Page::PackOptions => "sunrise.pack.options.title",
-<<<<<<< HEAD
-            Page::Graphics | Page::GraphicsAdvanced | Page::GraphicsHdr | Page::HdrCalibration => {
-                "options.videoTitle"
-            }
+            Page::HdrCalibration => "options.videoTitle",
             Page::PerfCalibration => "starling.calibrate.title",
             Page::GpuDrivers => "sunrise.pages.gpu_drivers",
-||||||| 46c00106def
-            Page::Graphics | Page::GraphicsAdvanced | Page::GraphicsHdr | Page::HdrCalibration => {
-                "options.videoTitle"
-            }
-=======
-            Page::HdrCalibration => "options.videoTitle",
->>>>>>> ed6772e2118
             Page::Controller | Page::PadBinds => "sunrise.pages.controller",
             Page::ControllerRadial => "sunrise.pages.controller_radial",
             Page::ControllerRadialName => "sunrise.radial.name_title",
@@ -4418,7 +4382,7 @@ impl OptionsUi {
         self.size = size;
         self.framebuffer = framebuffer;
         let mut events = Vec::new();
-<<<<<<< HEAD
+<<<<<<< ours
         if !right && self.painting() && self.painter.press(x, y, drag) {
             return (events, true);
         }
@@ -4428,16 +4392,9 @@ impl OptionsUi {
                 Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
             )
         {
-||||||| 46c00106def
-        if !drag
-            && matches!(
-                self.page(),
-                Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
-            )
-        {
 =======
         if matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds) {
->>>>>>> ed6772e2118
+>>>>>>> theirs
             let search = &mut self.settings_search;
             search.focused = ui::hovered((x, y), search.x, search.y, search.width, search.height);
             if search.focused {
@@ -4450,7 +4407,6 @@ impl OptionsUi {
                 return (events, true);
             }
         }
-<<<<<<< HEAD
         if !drag
             && !right
             && self.page() == Page::Skin
@@ -4489,12 +4445,7 @@ impl OptionsUi {
             }
             field.focused = false;
         }
-        if !drag && self.page() == Page::Language {
-||||||| 46c00106def
-        if !drag && self.page() == Page::Language {
-=======
         if self.page() == Page::Language {
->>>>>>> ed6772e2118
             let search = &mut self.language_search;
             search.focused = ui::hovered((x, y), search.x, search.y, search.width, search.height);
             if search.focused {
@@ -4602,40 +4553,31 @@ impl OptionsUi {
                             events.push(Event::Changed);
                         }
                         Act::ResetKey(name) => {
-<<<<<<< HEAD
+<<<<<<< ours
                             if name.starts_with("key.keypad.") {
                                 s.keypad.bindings.remove(*name);
                             } else {
-||||||| 46c00106def
-                            s.keys.set(name, KeyBinds::default_of(name));
 =======
                             if !s.extras.reset_key(name) {
->>>>>>> ed6772e2118
+>>>>>>> theirs
                                 s.keys.set(name, KeyBinds::default_of(name));
                             }
                             events.push(Event::Changed);
                         }
                         Act::ResetKeys => {
-<<<<<<< HEAD
                             if s.keypad.enabled {
                                 s.keypad.bindings.clear();
                             } else {
                                 s.keys.reset_all();
                                 s.mods.keys.clear();
-||||||| 46c00106def
-                            s.keys.reset_all();
-                            s.mods.keys.clear();
-=======
-                            s.keys.reset_all();
-                            s.mods.keys.clear();
-                            for (name, _) in crate::extras::KEYS {
-                                s.extras.reset_key(name);
->>>>>>> ed6772e2118
                             }
                             events.push(Event::Changed);
                         }
                         Act::ToggleMod(i) => {
                             s.mods.toggle(*i);
+                            for (name, _) in crate::extras::KEYS {
+                                s.extras.reset_key(name);
+                            }
                             events.push(Event::Changed);
                             events.push(Event::ModToggled(*i));
                         }
@@ -4668,7 +4610,7 @@ impl OptionsUi {
                                 events.push(Event::NativeSetting(*i, *j));
                             }
                         }
-<<<<<<< HEAD
+<<<<<<< ours
                         Act::NativeGame(act) => events.push(Event::NativeGame(*act)),
                         Act::OpenCatalog(shelf) => events.push(Event::OpenCatalog(*shelf)),
                         Act::ModProject(i) => {
@@ -4778,24 +4720,8 @@ impl OptionsUi {
                                 events.push(Event::OpenModPage(l.page.clone()));
                             }
                         }
-||||||| 46c00106def
-                        Act::ModProject(i) => {
-                            if let Some(listing) = self.mod_browser.listings.get(*i) {
-                                self.mod_project = listing.id.clone();
-                                self.push(Page::ModProject);
-                            }
-                        }
-                        Act::InstallMod => {
-                            self.mod_browser.message = None;
-                            events.push(Event::InstallMod(self.mod_project.clone()));
-                        }
-                        Act::OpenModPage => {
-                            if let Some(l) = self.mod_browser.listing(&self.mod_project) {
-                                events.push(Event::OpenModPage(l.page.clone()));
-                            }
-                        }
 =======
->>>>>>> ed6772e2118
+>>>>>>> theirs
                         Act::PvpPreset => {
                             crate::pvp::apply_preset(s);
                             events.push(Event::Changed);
@@ -5559,14 +5485,9 @@ impl OptionsUi {
         text: Option<&str>,
         shift: bool,
     ) -> Vec<Event> {
-<<<<<<< HEAD
         if self.wardrobe_saving() {
             return Vec::new();
         }
-        let events = self.key_modifiers_unrevised(s, atlas, key, text, shift);
-||||||| 46c00106def
-        let events = self.key_modifiers_unrevised(s, atlas, key, text, shift);
-=======
         self.key_input(s, atlas, key, text, shift).1
     }
 
@@ -5581,7 +5502,6 @@ impl OptionsUi {
     ) -> (bool, Vec<Event>) {
         self.capture_video_atlas(s);
         let (handled, events) = self.key_modifiers_unrevised(s, atlas, key, text, shift);
->>>>>>> ed6772e2118
         if !events.is_empty() {
             self.relayout();
         }
@@ -5749,7 +5669,7 @@ impl OptionsUi {
             }
             self.scroll = 0.0;
             self.relayout();
-<<<<<<< HEAD
+<<<<<<< ours
         } else if self.page() == Page::Skin && self.profile_name.is_none() && self.skin.name.focused
         {
             // Enter (the on-screen keyboard's Done) keeps the name.
@@ -5783,12 +5703,11 @@ impl OptionsUi {
                 }
             }
             field.reset_blink();
-||||||| 46c00106def
 =======
             if handled {
                 return (true, Vec::new());
             }
->>>>>>> ed6772e2118
+>>>>>>> theirs
         }
 
         // Gather focusables on the current page
@@ -6022,35 +5941,25 @@ impl OptionsUi {
                             events.push(Event::Changed);
                         }
                         Act::ResetKey(name) => {
-<<<<<<< HEAD
+<<<<<<< ours
                             if name.starts_with("key.keypad.") {
                                 s.keypad.bindings.remove(name);
                             } else {
-||||||| 46c00106def
-                            s.keys.set(name, KeyBinds::default_of(name));
 =======
                             if !s.extras.reset_key(name) {
->>>>>>> ed6772e2118
+>>>>>>> theirs
                                 s.keys.set(name, KeyBinds::default_of(name));
                             }
                             events.push(Event::Changed);
                         }
                         Act::ResetKeys => {
-<<<<<<< HEAD
                             if s.keypad.enabled {
                                 s.keypad.bindings.clear();
                             } else {
                                 s.keys.reset_all();
                                 s.mods.keys.clear();
-||||||| 46c00106def
-                            s.keys.reset_all();
-                            s.mods.keys.clear();
-=======
-                            s.keys.reset_all();
-                            s.mods.keys.clear();
                             for (name, _) in crate::extras::KEYS {
                                 s.extras.reset_key(name);
->>>>>>> ed6772e2118
                             }
                             events.push(Event::Changed);
                         }
@@ -6088,7 +5997,7 @@ impl OptionsUi {
                                 events.push(Event::NativeSetting(i, j));
                             }
                         }
-<<<<<<< HEAD
+<<<<<<< ours
                         Act::NativeGame(act) => events.push(Event::NativeGame(act)),
                         Act::OpenCatalog(shelf) => events.push(Event::OpenCatalog(shelf)),
                         Act::ModProject(i) => {
@@ -6106,24 +6015,8 @@ impl OptionsUi {
                                 events.push(Event::OpenModPage(l.page.clone()));
                             }
                         }
-||||||| 46c00106def
-                        Act::ModProject(i) => {
-                            if let Some(listing) = self.mod_browser.listings.get(i) {
-                                self.mod_project = listing.id.clone();
-                                self.push(Page::ModProject);
-                            }
-                        }
-                        Act::InstallMod => {
-                            self.mod_browser.message = None;
-                            events.push(Event::InstallMod(self.mod_project.clone()));
-                        }
-                        Act::OpenModPage => {
-                            if let Some(l) = self.mod_browser.listing(&self.mod_project) {
-                                events.push(Event::OpenModPage(l.page.clone()));
-                            }
-                        }
 =======
->>>>>>> ed6772e2118
+>>>>>>> theirs
                         Act::PvpPreset => {
                             crate::pvp::apply_preset(s);
                             events.push(Event::Changed);
@@ -9737,17 +9630,10 @@ mod tests {
                     if matches!(row.id, SunriseRow::Graphics(_)) {
                         graphics_rows.insert(id.clone());
                     }
-<<<<<<< HEAD
+<<<<<<< ours
                     Item::Vanilla(o) => format!("{o:?}"),
                     Item::Sunrise(h) => format!("graphics:{h:?}"),
                     Item::Display(option) => option.key().to_owned(),
-                    Item::Extra(e) => format!("extra:{e:?}"),
-                };
-                graphics_rows.insert(id.clone());
-                put(id, "Graphics");
-||||||| 46c00106def
-                    Item::Vanilla(o) => format!("{o:?}"),
-                    Item::Sunrise(h) => format!("graphics:{h:?}"),
                     Item::Extra(e) => format!("extra:{e:?}"),
                 };
                 graphics_rows.insert(id.clone());
@@ -9766,7 +9652,7 @@ mod tests {
                 .flat_map(|g| g.rows)
             {
                 put(format!("shader:{:?}", row.id), "ShaderOptions");
->>>>>>> ed6772e2118
+>>>>>>> theirs
             }
         }
         // Every page from the Options screen, through its buttons.
@@ -9921,16 +9807,10 @@ mod tests {
         assert_eq!(
             opens(&s),
             [
-<<<<<<< HEAD
+<<<<<<< ours
                 Page::Extras,
                 Page::Pvp,
                 Page::SplitSetup,
-                Page::Studio,
-                Page::Agent,
-                Page::ModBrowser,
-||||||| 46c00106def
-                Page::Extras,
-                Page::Pvp,
                 Page::Studio,
                 Page::Agent,
                 Page::ModBrowser,
@@ -9938,7 +9818,7 @@ mod tests {
                 (Tab::Tools, Page::Studio),
                 (Tab::Tools, Page::Agent),
                 (Tab::Extras, Page::Pvp)
->>>>>>> ed6772e2118
+>>>>>>> theirs
             ]
         );
         // No AI keeps the way to the AI Agent page, where it is turned off again.

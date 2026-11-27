@@ -569,12 +569,6 @@ impl Settings {
             file: f,
         }
     }
-<<<<<<< HEAD
-    /// `Options.createInformation`: what the server learns about this player (its language, for
-    /// a plugin's messages, chat colours and particles too).
-||||||| 46c00106def
-    /// `Options.createInformation`: what the server learns about this player.
-=======
     /// Validated live `(textureFiltering, maxAnisotropyBit, mipmapLevels)` for atlas stitching.
     pub fn texture_atlas_settings(&self) -> (i32, i32, i32) {
         (
@@ -583,8 +577,8 @@ impl Settings {
             self.mipmap_levels.clamp(0, 4),
         )
     }
-    /// `Options.createInformation`: what the server learns about this player.
->>>>>>> ed6772e2118
+    /// `Options.createInformation`: what the server learns about this player (its language, for
+    /// a plugin's messages, chat colours and particles too).
     pub fn client_information(&self, view_distance: i8) -> ClientInformation {
         ClientInformation {
             language: self.language.clone(),

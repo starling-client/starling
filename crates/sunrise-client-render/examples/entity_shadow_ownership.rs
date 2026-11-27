@@ -67,14 +67,8 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         (&white, 1),
         panorama,
         None,
-<<<<<<< HEAD
         None,
-        None,
-||||||| 46c00106def
-        None,
-=======
         sunrise_client_render::gfx::RendererDevice::New,
->>>>>>> ed6772e2118
         GraphicsApi::Vulkan,
         false,
         (true, true),

@@ -66,18 +66,14 @@ pub(super) struct StartupMenu {
     pub reload_packs: bool,
     /// A committed client pack selection, independent of other reload requests.
     pub(super) pack_selection_revision: u64,
-<<<<<<< HEAD
+<<<<<<< ours
     /// Browse mods' worker (`mod_browser`).
     mod_jobs: super::mod_browser::Jobs,
     pub perf: sunrise_client::telemetry::Session,
     pub(super) diagnostic_frame: Option<Instant>,
-||||||| 46c00106def
-    /// Browse mods' worker (`mod_browser`).
-    mod_jobs: super::mod_browser::Jobs,
-    perf: sunrise_client::telemetry::Session,
 =======
     perf: sunrise_client::telemetry::Session,
->>>>>>> ed6772e2118
+>>>>>>> theirs
 }
 
 impl StartupMenu {
@@ -147,20 +143,12 @@ impl StartupMenu {
             );
             title.last_server = settings.file.string("lastServer");
             title.skip_multiplayer_warning = settings.file.bool("skipMultiplayerWarning");
-<<<<<<< HEAD
-            // Gui.addInitialScreens: the accessibility onboarding comes first. Not on Android,
-            // which has no narrator, and whose players' options all still ask for it.
-            if !cfg!(target_os = "android") && settings.file.bool("onboardAccessibility") {
-||||||| 46c00106def
-            // Gui.addInitialScreens: the accessibility onboarding comes first.
-            if settings.file.bool("onboardAccessibility") {
-=======
             // The mods' parts are installed before this menu opens, so Create New World's
             // Game Rules page lists their rules from the first frame.
             title.set_rule_registry(Arc::new(crate::game::api_values::game_rule_registry()));
-            // Gui.addInitialScreens: the accessibility onboarding comes first.
-            if settings.file.bool("onboardAccessibility") {
->>>>>>> ed6772e2118
+            // Gui.addInitialScreens: the accessibility onboarding comes first. Not on Android,
+            // which has no narrator, and whose players' options all still ask for it.
+            if !cfg!(target_os = "android") && settings.file.bool("onboardAccessibility") {
                 title.start_onboarding();
             }
             self.title = Some(title);
@@ -780,7 +768,7 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
-<<<<<<< HEAD
+<<<<<<< ours
                 Event::ButtonClick => {
                     if let Some(audio) = &mut self.audio {
                         audio.play_button_click();
@@ -796,18 +784,8 @@ impl Loading {
                     self.menu.mod_jobs.install(ui, Game::game_dir(), id);
                 }
                 Event::OpenModPage(url) => packs::open_uri(&url),
-||||||| 46c00106def
-                Event::BrowseMods => {
-                    let ui = &mut self.menu.options.mod_browser;
-                    self.menu.mod_jobs.browse(ui, Game::game_dir());
-                }
-                Event::InstallMod(id) => {
-                    let ui = &mut self.menu.options.mod_browser;
-                    self.menu.mod_jobs.install(ui, Game::game_dir(), id);
-                }
-                Event::OpenModPage(url) => packs::open_uri(&url),
 =======
->>>>>>> ed6772e2118
+>>>>>>> theirs
                 // The startup menu has no screen stack for ConfirmLinkScreen; the link opens
                 // directly, as the menu's other links do.
                 Event::OpenLink(url) => packs::open_uri(&url),
@@ -892,7 +870,7 @@ impl Loading {
                 // The HUD editor needs a world: its button is inactive here.
                 Event::NativeSettings(_)
                 | Event::NativeSetting(..)
-<<<<<<< HEAD
+<<<<<<< ours
                 | Event::HudEditor
                 | Event::OpenCatalog(_)
                 | Event::NativeGame(_) => {}
@@ -908,13 +886,6 @@ impl Loading {
                 // The startup menu runs before the game opens a control socket, and has no music
                 // tracks to list or play.
                 Event::CopyAgentDetails
-||||||| 46c00106def
-                Event::NativeSettings(_) | Event::NativeSetting(..) | Event::HudEditor => {}
-                // The startup menu runs before the game opens a control socket,
-                // and before its sound engine (no clicks, no volume previews,
-                // and no music tracks to list or play).
-                Event::ButtonClick
-                | Event::CopyAgentDetails
 =======
                 | Event::ModConfigScreen(_)
                 | Event::HudEditor => {}
@@ -923,7 +894,7 @@ impl Loading {
                 // and no music tracks to list or play).
                 Event::ButtonClick
                 | Event::CopyAgentDetails
->>>>>>> ed6772e2118
+>>>>>>> theirs
                 | Event::ToggleRecording
                 | Event::ExportRepro
                 | Event::ListMusicTracks
@@ -1787,13 +1758,12 @@ mod tests {
         Loading {
             window: None,
             renderer: None,
-<<<<<<< HEAD
+<<<<<<< ours
             boot_renderer: None,
             world_renderer: None,
-||||||| 46c00106def
 =======
             max_atlas_size: Arc::new(AtomicU32::new(sunrise_client::hud::MAX_ATLAS_SIZE)),
->>>>>>> ed6772e2118
+>>>>>>> theirs
             boot: sunrise_client::hud::HudAtlas::boot(),
             gui: None,
             settings: Settings::default(),

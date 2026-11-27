@@ -31,19 +31,11 @@ pub(crate) use super::external::ShadowView;
 /// `Frame` it turns into the crate's `UniformFrameView`, sky and hand inputs; `shadow_view`; and
 /// `prepare_entities`, which uploads the frame's `Vertex` runs and its `SkinFrame`.
 pub trait PackPostExt: Sized {
-<<<<<<< HEAD
     /// The shadow pass this frame wants, when the pack draws one and this frame doesn't keep the
     /// last shadow map.
     fn shadow_view(&mut self, frame: &Frame) -> Option<ShadowView>;
-||||||| 46c00106def
-    /// The shadow pass this frame wants, when the pack draws one.
-    fn shadow_view(&self, frame: &Frame) -> Option<ShadowView>;
-=======
-    /// The shadow pass this frame wants, when the pack draws one.
-    fn shadow_view(&self, frame: &Frame) -> Option<ShadowView>;
     /// The shadow pass's size, distance and matrices as `frame` reads them, for mods.
     fn mod_shadow_state(&self, frame: &Frame) -> Option<(u32, f32, [f32; 16], [f32; 16])>;
->>>>>>> ed6772e2118
     /// The entities and block entities the pack draws this frame, into its own buffers.
     fn prepare_entities(
         &mut self,

@@ -103,16 +103,10 @@ enum PhysicalKey { Code(i32), Unidentified(i32) }
 struct KeyEvent { physical_key: PhysicalKey, text: &'static str, state: ElementState, repeat: bool }
 enum WindowEvent { KeyboardInput { event: KeyEvent, is_synthetic: bool }, Other }
 fn glfw_modifiers(bits: u32) -> u32 { bits }
-<<<<<<< HEAD
 // Starling's window_handler.rs reads the unmodified key through a function of its own (Android has no modifier
 // supplement).
 fn key_without_modifiers(event: &KeyEvent) -> &'static str { event.text }
-struct Game { window: Option<Window>, modifiers: u32, early: bool, input: bool, unclaimed_window: bool,
-||||||| 46c00106def
-struct Game { window: Option<Window>, modifiers: u32, early: bool, input: bool, unclaimed_window: bool,
-=======
 struct Game { window: Option<Window>, modifiers: u32, early: bool, unclaimed_window: bool,
->>>>>>> ed6772e2118
               calls: Vec<&'static str>, observed: Vec<(&'static str, Option<&'static str>, u32, KeyAction, u32)> }
 impl Game {
     fn scripted_run(&self) -> bool { false }

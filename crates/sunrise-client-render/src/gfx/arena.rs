@@ -306,7 +306,7 @@ impl Arena {
         usage: wgpu::BufferUsages,
         page_bytes: u64,
     ) -> Self {
-<<<<<<< HEAD
+<<<<<<< ours
         // Pages of `page_bytes`, or less where the device's buffers (or the
         // storage bindings that read them whole) are smaller.
         let limits = device.limits();
@@ -321,20 +321,10 @@ impl Arena {
         let capacity = capacity
             .next_multiple_of(GRAIN)
             .min(growth_limit.unwrap_or(page_limit).min(page_limit));
-||||||| 46c00106def
-        // Pages of `page_bytes`, or less where the device's buffers (or the
-        // storage bindings that read them whole) are smaller.
-        let limits = device.limits();
-        let mut bytes = limits.max_buffer_size.min(page_bytes);
-        if usage.contains(wgpu::BufferUsages::STORAGE) {
-            bytes = bytes.min(limits.max_storage_buffer_binding_size);
-        }
-        let page_limit = (bytes / stride) / GRAIN * GRAIN;
-        let capacity = capacity.next_multiple_of(GRAIN).min(page_limit);
 =======
         let page_limit = Self::page_limit(&device.limits(), stride, usage, page_bytes);
         let capacity = capacity.next_multiple_of(GRAIN).min(page_limit);
->>>>>>> ed6772e2118
+>>>>>>> theirs
         Self {
             pages: Vec::new(),
             page_bytes: 0,
@@ -1030,14 +1020,8 @@ impl Arena {
                 && let Some(p) = page.take()
             {
                 self.page_bytes -= p.bytes();
-<<<<<<< HEAD
                 emptied.push(p);
-||||||| 46c00106def
-                released.push(p.buffer);
-=======
-                released.push(p.buffer);
                 released.extend(p.normals);
->>>>>>> ed6772e2118
             }
         }
         let released = emptied
@@ -1057,7 +1041,7 @@ impl Arena {
     pub fn clear(&mut self) -> Vec<wgpu::Buffer> {
         self.closing = None;
         self.page_bytes = 0;
-<<<<<<< HEAD
+<<<<<<< ours
         let pages: Vec<Page> = self.pages.drain(..).flatten().collect();
         pages
             .into_iter()
@@ -1080,15 +1064,13 @@ fn page_ceiling(page_bytes: u64) -> u64 {
         32 << 20
     } else {
         page_bytes
-||||||| 46c00106def
-        self.pages.drain(..).flatten().map(|p| p.buffer).collect()
 =======
         self.pages
             .drain(..)
             .flatten()
             .flat_map(|p| std::iter::once(p.buffer).chain(p.normals))
             .collect()
->>>>>>> ed6772e2118
+>>>>>>> theirs
     }
 }
 

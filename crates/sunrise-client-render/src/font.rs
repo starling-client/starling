@@ -14,18 +14,17 @@ use crate::{
 };
 use ab_glyph::{Font as _, ScaleFont as _};
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
-<<<<<<< HEAD
+<<<<<<< ours
 #[path = "font/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
-||||||| 46c00106def
 =======
 use sunrise_core::random::LegacyRandom;
 
 mod formatted_lines;
 pub use formatted_lines::{FormattedLine, FormattedLines};
->>>>>>> ed6772e2118
+>>>>>>> theirs
 
 /// `FontDescription.DEFAULT`.
 pub const DEFAULT: &str = "minecraft:default";
@@ -779,11 +778,6 @@ impl Font {
         metrics_only: bool,
     ) -> Self {
         let sheets = sprites.clone();
-<<<<<<< HEAD
-        let mut font = Self {
-||||||| 46c00106def
-        let font = Self {
-=======
         let missing_rect = (!metrics_only)
             .then(|| sprites.get("sunrise/missing_glyph"))
             .flatten()
@@ -792,8 +786,7 @@ impl Font {
                 let y = (r.v0 * atlas.1 as f32).round() as u32;
                 glyph_rect(x, y, r.w, r.h, atlas)
             });
-        let font = Self {
->>>>>>> ed6772e2118
+        let mut font = Self {
             sheets,
             missing: Glyph {
                 rect: None,

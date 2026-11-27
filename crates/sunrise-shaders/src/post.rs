@@ -1633,31 +1633,17 @@ impl Loader<'_> {
         let program = match contained(&fsh, || translate(&vertex, &fragment)) {
             Ok(p) => p,
             Err(errors) => {
-<<<<<<< HEAD
+<<<<<<< ours
                 skip(self.post, &name, located_errors(&errors));
-||||||| 46c00106def
-                notes.extend(
-                    errors
-                        .iter()
-                        .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
-                );
-                notes.push(format!("{name}: skipped"));
 =======
                 notes.extend(errors.iter().map(ToString::to_string));
                 notes.push(format!("{name}: skipped"));
->>>>>>> ed6772e2118
+>>>>>>> theirs
                 return None;
             }
         };
-<<<<<<< HEAD
+<<<<<<< ours
         self.post.notes.extend(
-            program
-                .notes
-                .iter()
-                .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
-        );
-||||||| 46c00106def
-        notes.extend(
             program
                 .notes
                 .iter()
@@ -1665,7 +1651,7 @@ impl Loader<'_> {
         );
 =======
         notes.extend(program.notes.iter().map(ToString::to_string));
->>>>>>> ed6772e2118
+>>>>>>> theirs
         self.post.config.read_vertex(&vertex);
         self.post.config.read(&fragment);
         let mut buffers =
@@ -1807,7 +1793,7 @@ impl Loader<'_> {
         // Conditions read as false, as the other programs' (`load`).
         notes.extend(stages.iter().flat_map(warnings));
         let [vertex, geometry, fragment] = &stages;
-<<<<<<< HEAD
+<<<<<<< ours
         let translated = contained(fsh, || {
             crate::translate_geometry(vertex, geometry, fragment, inputs)
         });
@@ -1824,26 +1810,6 @@ impl Loader<'_> {
                 .iter()
                 .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
         );
-||||||| 46c00106def
-        let (program, triangles) =
-            match crate::translate_geometry(vertex, geometry, fragment, inputs) {
-                Ok(p) => p,
-                Err(errors) => {
-                    notes.extend(
-                        errors
-                            .iter()
-                            .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
-                    );
-                    notes.push(format!("{name}: skipped"));
-                    return None;
-                }
-            };
-        notes.extend(
-            program
-                .notes
-                .iter()
-                .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
-        );
 =======
         let (program, triangles) =
             match crate::translate_geometry(vertex, geometry, fragment, inputs, self.limits) {
@@ -1855,7 +1821,7 @@ impl Loader<'_> {
                 }
             };
         notes.extend(program.notes.iter().map(ToString::to_string));
->>>>>>> ed6772e2118
+>>>>>>> theirs
         self.post.config.read_vertex(vertex);
         self.post.config.read(fragment);
         let mut buffers =
@@ -1920,25 +1886,12 @@ impl Loader<'_> {
                 skip(self.post, &name, problems);
                 continue;
             }
-<<<<<<< HEAD
-            match contained(&path, || translate_compute(&pp)) {
-||||||| 46c00106def
-            match translate_compute(&pp) {
-=======
             // Conditions read as false, as the other programs' (`load`).
             notes.extend(warnings(&pp));
-            match translate_compute(&pp) {
->>>>>>> ed6772e2118
+            match contained(&path, || translate_compute(&pp)) {
                 Ok(program) => {
-<<<<<<< HEAD
+<<<<<<< ours
                     self.post.notes.extend(
-                        program
-                            .notes
-                            .iter()
-                            .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
-                    );
-||||||| 46c00106def
-                    notes.extend(
                         program
                             .notes
                             .iter()
@@ -1946,26 +1899,17 @@ impl Loader<'_> {
                     );
 =======
                     notes.extend(program.notes.iter().map(ToString::to_string));
->>>>>>> ed6772e2118
+>>>>>>> theirs
                     out.push((name, program));
                 }
-<<<<<<< HEAD
+<<<<<<< ours
                 Err(errors) => skip(self.post, &name, located_errors(&errors)),
-||||||| 46c00106def
-                Err(errors) => {
-                    notes.extend(
-                        errors
-                            .iter()
-                            .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
-                    );
-                    notes.push(format!("{name}: skipped"));
-                }
 =======
                 Err(errors) => {
                     notes.extend(errors.iter().map(ToString::to_string));
                     notes.push(format!("{name}: skipped"));
                 }
->>>>>>> ed6772e2118
+>>>>>>> theirs
             }
         }
         out

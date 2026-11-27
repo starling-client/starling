@@ -17,16 +17,10 @@ impl Renderer {
         forcefield: (&[u8], u32),
         panorama_faces: Arc<panorama::Faces>,
         prepared: Option<PreparedTextures>,
-<<<<<<< HEAD
-        previous: Option<&Self>,
+        render_device: RendererDevice<'_>,
         // The loading screen's device (`BootRenderer::lend`), this renderer made on it while the
         // loading screen goes on drawing: its surface comes at the handover (`adopt_surface`).
         boot: Option<boot::Lent>,
-||||||| 46c00106def
-        previous: Option<&Self>,
-=======
-        render_device: RendererDevice<'_>,
->>>>>>> ed6772e2118
         api: GraphicsApi,
         translucent_batching: bool,
         (shader_pack, pack_starts_wide): (bool, bool),
@@ -36,7 +30,7 @@ impl Renderer {
         request: output::FrameRequest,
         display: output::DisplayReading,
     ) -> Result<Self> {
-<<<<<<< HEAD
+<<<<<<< ours
         // The window is in the background (Android) while this replaces a renderer that let its
         // surface go (`suspend`): no surface can be made on it now ("the underlying handle is not
         // available", a fatal error when loading ended in the background). This one starts
@@ -48,13 +42,12 @@ impl Renderer {
             && (boot.is_some()
                 || previous
                     .is_some_and(|p| p.suspended && p.surface.is_none() && p.offscreen.is_none()));
-||||||| 46c00106def
 =======
         let previous = match &render_device {
             RendererDevice::Reuse(renderer) => Some(*renderer),
             _ => None,
         };
->>>>>>> ed6772e2118
+>>>>>>> theirs
         let Opened {
             instance,
             surface,
@@ -63,7 +56,7 @@ impl Renderer {
             queue,
             device_lost,
             configured,
-<<<<<<< HEAD
+<<<<<<< ours
         } = match boot {
             // Opened by `open_device` too, with the window's configuration and capabilities.
             Some(boot) => boot.into_opened(),
@@ -95,34 +88,6 @@ impl Renderer {
                         device_lost: renderer.device_lost.clone(),
                         configured: None,
                     }
-||||||| 46c00106def
-        } = match previous {
-            // Reload resources on the same device; replacing live Vulkan
-            // devices can invalidate the driver's swapchain state on the same
-            // window.
-            Some(renderer) => {
-                describe_adapter(&renderer.adapter);
-                check_layers(&renderer.adapter, layers)?;
-                Opened {
-                    surface: if offscreen {
-                        None
-                    } else {
-                        let spare = renderer
-                            .spare_surface
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .take();
-                        Some(match spare {
-                            Some(surface) => surface,
-                            None => renderer.instance.create_surface(window.clone())?,
-                        })
-                    },
-                    instance: renderer.instance.clone(),
-                    adapter: renderer.adapter.clone(),
-                    device: renderer.device.clone(),
-                    queue: renderer.queue.clone(),
-                    device_lost: renderer.device_lost.clone(),
-                    configured: None,
 =======
         } = match render_device {
             // Reload resources on the same device; replacing live Vulkan
@@ -151,25 +116,19 @@ impl Renderer {
                     queue: renderer.queue.clone(),
                     device_lost: renderer.device_lost.clone(),
                     configured: None,
->>>>>>> ed6772e2118
+>>>>>>> theirs
                 }
-<<<<<<< HEAD
+<<<<<<< ours
                 None => {
                     let _step = crate::spans::startup::step("renderer.open_device");
                     open_device(&window, offscreen, api, layers).await?
                 }
             },
-||||||| 46c00106def
-            }
-            None => {
-                let _step = crate::spans::startup::step("renderer.open_device");
-                open_device(&window, offscreen, api, layers).await?
-            }
 =======
             }
             RendererDevice::Opened(opened) => *opened,
             RendererDevice::New => Opened::for_window(&window, offscreen, api, layers).await?,
->>>>>>> ed6772e2118
+>>>>>>> theirs
         };
         // Computed once: the sprite arrays, the shaders' constants and the
         // shader pack atlas all cut the sprites by it.
@@ -599,7 +558,7 @@ impl Renderer {
         // `solid` in two passes (terrain.wgsl's `opaque_quad`, `mesher::Part`), for the
         // world pass without a shader pack: no cutout first, through a shader that never
         // discards, then the rest.
-<<<<<<< HEAD
+<<<<<<< ours
         let split_terrain = splits_solid(&adapter.get_info());
         let solid_split = split_terrain.then(|| {
             (
@@ -624,26 +583,6 @@ impl Renderer {
         // The water mirror's camera sees the world from the other side of the plane, and a
         // mirrored world view's picture is flipped (`world_views::Flipped`): each turns the
         // winding round, so their terrain culls the front.
-||||||| 46c00106def
-        let solid_opaque = solid_in(
-            &layout,
-            "Terrain solid opaque",
-            "vs_terrain_opaque",
-            "fs_opaque",
-            &terrain_buffers,
-            wgpu::Face::Back,
-        );
-        let solid_cutout = solid_in(
-            &layout,
-            "Terrain solid cutout",
-            "vs_terrain_cutout",
-            "fs_solid",
-            &terrain_buffers,
-            wgpu::Face::Back,
-        );
-        // The water mirror's camera sees the world from the other side of the plane, and a
-        // mirrored world view's picture is flipped (`world_views::Flipped`): each turns the
-        // winding round, so their terrain culls the front.
 =======
         let solid_opaque = solid_in(
             &layout,
@@ -663,7 +602,7 @@ impl Renderer {
         );
         // A mirrored world view's picture is flipped (`world_views::Flipped`), which turns the
         // winding round, so its terrain culls the front.
->>>>>>> ed6772e2118
+>>>>>>> theirs
         let front = |label, fragment, blend| {
             pipeline(
                 label,
@@ -1114,7 +1053,7 @@ impl Renderer {
             &emission_stats.view,
             emissive_view,
         );
-<<<<<<< HEAD
+<<<<<<< ours
         let mirror_group = terrain_group(
             &device,
             "Water mirror resources",
@@ -1127,20 +1066,8 @@ impl Renderer {
             &emission_stats.view,
             emissive_view,
         );
-||||||| 46c00106def
-        let mirror_group = terrain_group(
-            &device,
-            "Water mirror resources",
-            &bindings,
-            &mirror_globals,
-            &sprite_views,
-            &sprite_sampler,
-            &lightmap_view,
-            &lightmap_sampler,
-            &emission_stats.view,
-        );
 =======
->>>>>>> ed6772e2118
+>>>>>>> theirs
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
         let instance_capacity = 4096;
@@ -1275,15 +1202,14 @@ impl Renderer {
             }),
         )?;
         hud.atlas_texture = Some(atlas.clone());
-<<<<<<< HEAD
+<<<<<<< ours
         drop(textures_step);
-||||||| 46c00106def
 =======
         // On the same device the previous renderer's dynamic textures are still valid.
         if let Some(previous) = previous {
             hud.share_dynamic(previous.hud.dynamic().clone());
         }
->>>>>>> ed6772e2118
+>>>>>>> theirs
         let entity_step = crate::spans::startup::step("renderer.entity_pipelines");
         let entity_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sunrise entities"),
@@ -2274,11 +2200,8 @@ impl Renderer {
         let flat_wanted = flat::wanted(&adapter, &device);
         // Metal and phones draw solid terrain in two passes (`splits_solid`): meshes put all
         // their opaque quads first, so each pass draws its part in a run or two.
-<<<<<<< HEAD
+<<<<<<< ours
         crate::mesher::group_parts(splits_solid(&adapter.get_info()));
-        // Readable as storage where flat draws run: a shader pack's terrain program reads them.
-||||||| 46c00106def
-        crate::mesher::group_parts(adapter.get_info().backend == wgpu::Backend::Metal);
         // Readable as storage where flat draws run: a shader pack's terrain program reads them.
 =======
         crate::mesher::group_parts(adapter.get_info().backend == wgpu::Backend::Metal);
@@ -2293,7 +2216,7 @@ impl Renderer {
         // With a normal stream where the pack's per-section draws read no pages
         // (`follow_arena_layout`), as for the pack's taken to fit with it.
         let arena_normals = pack_starts_wide && !flat_wanted && !terrain_pages;
->>>>>>> ed6772e2118
+>>>>>>> theirs
         let arena = arena::Arena::new(
             &device,
             std::mem::size_of::<TerrainVertex>() as u64,
@@ -2346,13 +2269,11 @@ impl Renderer {
         // With flat draws' page groups the per-section solid draws read their vertices from
         // the page too (`Flat::page_group`), in either layout of the solid quads
         // (`mesher::packed`): only the origins stay a vertex buffer, at slot 1.
-<<<<<<< HEAD
+<<<<<<< ours
         let (solid, solid_split, solid_mirror, flipped) = match &flat {
-||||||| 46c00106def
-        let (solid, solid_opaque, solid_cutout, solid_mirror, flipped) = match &flat {
 =======
         let (solid, solid_opaque, solid_cutout, flipped) = match &flat {
->>>>>>> ed6772e2118
+>>>>>>> theirs
             Some(f) => {
                 let pulled_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Sunrise terrain layout (pulled)"),
@@ -2366,7 +2287,7 @@ impl Renderer {
                 let (back, front) = (wgpu::Face::Back, wgpu::Face::Front);
                 (
                     solid("Terrain solid", "vs_section", "fs_solid", back),
-<<<<<<< HEAD
+<<<<<<< ours
                     split_terrain.then(|| {
                         (
                             solid(
@@ -2394,31 +2315,6 @@ impl Renderer {
                         true,
                         true,
                         None,
-||||||| 46c00106def
-                    solid(
-                        "Terrain solid opaque",
-                        "vs_section_opaque",
-                        "fs_opaque",
-                        back,
-                    ),
-                    solid(
-                        "Terrain solid cutout",
-                        "vs_section_cutout",
-                        "fs_solid",
-                        back,
-                    ),
-                    pipeline_in(
-                        &pulled_layout,
-                        "Terrain solid (mirrored)",
-                        "vs_section",
-                        "fs_solid_mirror",
-                        &origins,
-                        tri,
-                        Some(front),
-                        true,
-                        true,
-                        None,
-                    ),
 =======
                     solid(
                         "Terrain solid opaque",
@@ -2431,18 +2327,16 @@ impl Renderer {
                         "vs_section_cutout",
                         "fs_solid",
                         back,
->>>>>>> ed6772e2118
+>>>>>>> theirs
                     ),
                     solid("Terrain solid (flipped)", "vs_section", "fs_solid", front),
                 )
             }
-<<<<<<< HEAD
+<<<<<<< ours
             None => (solid, solid_split, solid_mirror, flipped),
-||||||| 46c00106def
-            None => (solid, solid_opaque, solid_cutout, solid_mirror, flipped),
 =======
             None => (solid, solid_opaque, solid_cutout, flipped),
->>>>>>> ed6772e2118
+>>>>>>> theirs
         };
         // The solid quads in the compact layout where every pass reads it; the first world
         // frames settle it for the picked pack (`follow_packed_layout`).

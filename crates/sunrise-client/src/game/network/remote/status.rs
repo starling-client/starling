@@ -21,19 +21,10 @@ impl Game<'_> {
             &r.skin_textures,
             &mut r.level_player_textures,
         );
-<<<<<<< HEAD
         let (online_mode, names): (bool, Vec<(u128, String)>) = (
             r.online_mode,
             r.players.iter().map(|(u, n)| (*u, n.clone())).collect(),
         );
-        let own = match &r.own_profile {
-            OwnProfile::Done(Some(t)) => Some(t.clone()),
-            _ => None,
-||||||| 46c00106def
-        let own = match &r.own_profile {
-            OwnProfile::Done(Some(t)) => Some(t.clone()),
-            _ => None,
-=======
         // Unpacked and verified on the skin downloader's threads: the game
         // thread reads answers and starts the rest (`SkinManager.getOrLoad`).
         let entries: Vec<(u128, Arc<skins::Textures>)> = {
@@ -47,7 +38,6 @@ impl Game<'_> {
                         .map(|textures| (*uuid, textures))
                 })
                 .collect()
->>>>>>> ed6772e2118
         };
         // Minecraft.profileFuture: the signed-in account's active skin and cape
         // when the server sent none (single player), or only a skin without
@@ -70,7 +60,7 @@ impl Game<'_> {
                     }
                     Some(merged)
                 }
-<<<<<<< HEAD
+<<<<<<< ours
                 if t.cape.is_none() {
                     t.cape = own.cape.clone();
                 }
@@ -109,21 +99,6 @@ impl Game<'_> {
         // PlayerSkin.cape of each resolved skin.
         let mut capes: HashMap<u128, String> = HashMap::new();
         for (uuid, textures) in entries {
-||||||| 46c00106def
-                if t.cape.is_none() {
-                    t.cape = own.cape.clone();
-                }
-            } else if own.skin.is_some() || own.cape.is_some() {
-                entries.retain(|(u, _)| *u != local);
-                entries.push((local, own));
-            }
-        }
-        let mut resolved: Vec<(u128, String)> = Vec::new();
-        // PlayerSkin.model of each resolved skin: the textures' `slim`.
-        let mut slim = std::collections::HashSet::new();
-        // PlayerSkin.cape of each resolved skin.
-        let mut capes: HashMap<u128, String> = HashMap::new();
-        for (uuid, textures) in entries {
 =======
                 None => (own.skin.is_some() || own.cape.is_some()).then(|| own.clone()),
             },
@@ -131,9 +106,9 @@ impl Game<'_> {
         };
         let mut skins = HashMap::new();
         {
->>>>>>> ed6772e2118
+>>>>>>> theirs
             // PlayerInfo.createSkinLookup: only the local player's own skin
-<<<<<<< HEAD
+<<<<<<< ours
             // may be unsigned; Ely.by's never are.
             let secure = uuid != local && !from_elyby.contains(&uuid);
             let skin = {
@@ -141,13 +116,13 @@ impl Game<'_> {
                 sunrise_client::skins::lookup(&textures, secure, |kind, url| {
                     downloads.state(kind, url)
                 })
-||||||| 46c00106def
-            // may be unsigned.
-            let skin = {
-                let mut downloads = self.skin_downloads.borrow_mut();
-                sunrise_client::skins::lookup(&textures, uuid != local, |kind, url| {
-                    downloads.state(kind, url)
-                })
+            };
+            if let Some(skin) = skin {
+                if textures.slim {
+                    slim.insert(uuid);
+                }
+                if let Some(cape) = sunrise_client::skins::cape(&textures) {
+                    capes.insert(uuid, cape);
 =======
             // may be unsigned.
             let mut downloads = self.skin_downloads.borrow_mut();
@@ -159,8 +134,8 @@ impl Game<'_> {
                     && skin != skins::ResolvedSkin::default()
                 {
                     skins.insert(uuid, skin);
+>>>>>>> theirs
                 }
->>>>>>> ed6772e2118
             };
             for (uuid, textures) in entries.iter().filter(|(u, _)| own.is_none() || *u != local) {
                 resolve(*uuid, textures);
@@ -230,12 +205,11 @@ impl Game<'_> {
         }
         if self.player_model.is_some() {
             // Avatar.isModelPartShown(CAPE): the Skin Customization option.
-<<<<<<< HEAD
-            let cape = capes
-                .get(&own)
-                .filter(|_| self.settings.file.bool("modelPart_cape"))
-                .filter(|c| self.again_skin(c))
-                .cloned();
+            let show_cape = self.settings.file.bool("modelPart_cape");
+            let (skin, is_slim, cape) =
+                skins::drawable_skin(local, skins.get(&local), show_cape, |sprite| {
+                    self.again_skin(sprite)
+                });
             // Starling: the wardrobe's cape (Android), in place of the account's.
             #[cfg(target_os = "android")]
             let cape = if self.settings.file.bool("modelPart_cape") {
@@ -243,19 +217,6 @@ impl Game<'_> {
             } else {
                 None
             };
-||||||| 46c00106def
-            let cape = capes
-                .get(&own)
-                .filter(|_| self.settings.file.bool("modelPart_cape"))
-                .filter(|c| self.again_skin(c))
-                .cloned();
-=======
-            let show_cape = self.settings.file.bool("modelPart_cape");
-            let (skin, is_slim, cape) =
-                skins::drawable_skin(local, skins.get(&local), show_cape, |sprite| {
-                    self.again_skin(sprite)
-                });
->>>>>>> ed6772e2118
             if let Some(mob) = self.player_model.as_mut() {
                 mob.skin = Some(skin.to_owned());
                 mob.slim = is_slim;

@@ -54,17 +54,16 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
 pub(super) struct Loading {
     pub(super) window: Option<Arc<Window>>,
     pub(super) renderer: Option<Renderer>,
-<<<<<<< HEAD
+<<<<<<< ours
     /// What the loading screen draws with until the world's renderer is built from it
     /// (`finish`): the panorama and the HUD, and none of the world's pipelines.
     pub(super) boot_renderer: Option<sunrise_client::gfx::boot::BootRenderer>,
     /// The world's renderer, made on the boot renderer's device while the title stays up.
     pub(super) world_renderer: Option<WorldRenderer>,
-||||||| 46c00106def
 =======
     /// The opened GPU device's `max_texture_dimension_2d`, shared with the background loader.
     pub(super) max_atlas_size: Arc<AtomicU32>,
->>>>>>> ed6772e2118
+>>>>>>> theirs
     /// The boot screen's atlas, until the pack's GUI atlas replaces it.
     pub(super) boot: sunrise_client::hud::HudAtlas,
     pub(super) gui: Option<UiResources>,
@@ -212,7 +211,7 @@ impl Loading {
             });
         let offscreen = self.options.as_ref().is_some_and(|o| o.offscreen);
         let boot_step = startup::step("renderer.boot");
-<<<<<<< HEAD
+<<<<<<< ours
         // The menu bundle may have come before the window (Android's setup puts its skin on
         // while the surface is still on its way; `set_ui` then had no window to build for):
         // its atlas, not the boot screen's, is the one its screens' text and sprites name.
@@ -258,17 +257,6 @@ impl Loading {
         match failed {
             None => {}
             Some(e) => {
-||||||| 46c00106def
-        match loading_renderer(
-            window.clone(),
-            offscreen,
-            Some(&self.boot),
-            None,
-            None,
-            self.settings.sunrise.api,
-        ) {
-            Ok(r) => self.renderer = Some(r),
-            Err(e) => {
 =======
         match loading_renderer(
             window.clone(),
@@ -286,7 +274,7 @@ impl Loading {
                 self.renderer = Some(r);
             }
             Err(e) => {
->>>>>>> ed6772e2118
+>>>>>>> theirs
                 #[cfg(target_os = "windows")]
                 if let Some(stop) = &boot_paint_stop {
                     stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -617,7 +605,7 @@ impl Loading {
             self.started.elapsed().as_secs_f32(),
             self.settings.file.double("panoramaScrollSpeed") as f32,
         );
-<<<<<<< HEAD
+<<<<<<< ours
         let diagnostic_prepared = diagnostic_started.elapsed();
         let drawn = if let Some(boot) = &mut self.boot_renderer {
             match boot.render(&batch, yaw, !console && !onboarding) {
@@ -625,17 +613,6 @@ impl Loading {
                 Err(e) => {
                     log::warn!("Sunrise: loading screen frame failed: {e}");
                     false
-||||||| 46c00106def
-        if let Some(renderer) = &mut self.renderer {
-            match renderer.render(&frame) {
-                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
-                    self.title_drawn = true;
-=======
-        if let Some(renderer) = &mut self.renderer {
-            match renderer.render(&frame, None) {
-                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
-                    self.title_drawn = true;
->>>>>>> ed6772e2118
                 }
             }
         } else if let Some(renderer) = &mut self.renderer {
@@ -646,6 +623,12 @@ impl Loading {
                 Err(e) => {
                     log::warn!("Sunrise: loading screen frame failed: {e}");
                     false
+=======
+        if let Some(renderer) = &mut self.renderer {
+            match renderer.render(&frame, None) {
+                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
+                    self.title_drawn = true;
+>>>>>>> theirs
                 }
             }
         } else {
@@ -801,7 +784,7 @@ impl Loading {
             self.settings.file.int("maxAnisotropyBit"),
         );
         let renderer_at = Instant::now();
-<<<<<<< HEAD
+<<<<<<< ours
         let renderer_step = startup::step("handoff.renderer");
         let (renderer, clouds) = match built {
             Some(mut renderer) => {
@@ -853,30 +836,6 @@ impl Loading {
             }
         };
         drop(renderer_step);
-||||||| 46c00106def
-        let (renderer, clouds) = startup::time("renderer.world", || {
-            build_renderer(
-                window.clone(),
-                options.offscreen,
-                &loaded.pack,
-                &gui,
-                self.renderer.as_ref(),
-                loaded.renderer_cpu,
-                self.settings.sunrise.api,
-                self.settings.sunrise.translucent_batching,
-                self.settings.vsync,
-                &self.settings.sunrise,
-                shader_packs::picked_pack_shape(&self.settings),
-                self.renderer
-                    .as_ref()
-                    .map(|r| r.display_reading())
-                    .unwrap_or_default(),
-                (
-                    self.settings.file.int("textureFiltering"),
-                    self.settings.file.int("maxAnisotropyBit"),
-                ),
-            )
-        })?;
 =======
         let mut pick_hdr = shader_packs::PickHdr::default();
         let (renderer, required) = startup::time("renderer.world", || {
@@ -902,7 +861,7 @@ impl Loading {
                 self.settings.texture_atlas_settings(),
             )
         })?;
->>>>>>> ed6772e2118
+>>>>>>> theirs
         log::info!(
             "Sunrise: world renderer ready after {} ms",
             self.started.elapsed().as_millis()
@@ -1081,14 +1040,8 @@ impl ApplicationHandler for App {
 /// manifest is `sunrise-resources.json`): without them, say where they were
 /// looked for and how to get them, before a window or a loader starts. `get` is
 /// the page a hook sends the player to (`sunrise_hooks::engine::get_the_game`).
-<<<<<<< HEAD
 #[cfg(not(target_os = "android"))]
-pub(super) fn missing_resources(
-||||||| 46c00106def
-pub(super) fn missing_resources(
-=======
 pub(super) fn preflight_resources(
->>>>>>> ed6772e2118
     root: &std::path::Path,
     get: Option<sunrise_hooks::GetTheGame>,
     dedicated: bool,
@@ -1125,7 +1078,7 @@ pub(super) fn preflight_resources(
             "Sunrise's prepared game files at {} are damaged: {problem}",
             root.display(),
         )
-<<<<<<< HEAD
+<<<<<<< ours
     })
 }
 
@@ -1133,18 +1086,6 @@ pub(super) fn preflight_resources(
 /// left unusable. The loader parses these before it can start; naming one
 /// beats serde's bare "expected value at line 1 column 1".
 #[cfg(not(target_os = "android"))]
-pub(super) fn damaged_prepared(root: &std::path::Path) -> Option<String> {
-    let manifest = root.join("sunrise-resources.json");
-    let bytes = std::fs::read(&manifest).ok()?;
-    if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Some("sunrise-resources.json is empty".into());
-||||||| 46c00106def
-    })
-}
-
-/// Which top-level prepared file a killed preparation or an interrupted copy
-/// left unusable. The loader parses these before it can start; naming one
-/// beats serde's bare "expected value at line 1 column 1".
 pub(super) fn damaged_prepared(root: &std::path::Path) -> Option<String> {
     let manifest = root.join("sunrise-resources.json");
     let bytes = std::fs::read(&manifest).ok()?;
@@ -1160,7 +1101,7 @@ pub(super) fn damaged_prepared(root: &std::path::Path) -> Option<String> {
              client files, then pass --resources FULL_DIR.",
             root.display(),
         ));
->>>>>>> ed6772e2118
+>>>>>>> theirs
     }
     let mut problems = manifest.version_problems(root, VERSION_ID);
     if profile == Profile::Server {
