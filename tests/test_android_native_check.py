@@ -64,5 +64,16 @@ class CheckMods(unittest.TestCase):
         self.assertTrue(answer["packages"]["alpha.smod"]["ok"])
 
 
+class EntryAllowed(unittest.TestCase):
+    def test_forbid_becomes_deny_for_unsafe_code_alone(self):
+        self.assertEqual(sdk.entry_allowed("#![forbid(unsafe_code)]\nfn a() {}\n"), "#![deny(unsafe_code)]\nfn a() {}\n")
+        self.assertEqual(sdk.entry_allowed("#![forbid(missing_docs, unsafe_code)]\n"),
+                         "#![forbid(missing_docs)]\n#![deny(unsafe_code)]\n")
+
+    def test_other_roots_are_left_as_they_are(self):
+        for root in ("#![deny(unsafe_code)]\n", "#![forbid(missing_docs)]\n", "fn main() {}\n"):
+            self.assertEqual(sdk.entry_allowed(root), root)
+
+
 if __name__ == "__main__":
     unittest.main()

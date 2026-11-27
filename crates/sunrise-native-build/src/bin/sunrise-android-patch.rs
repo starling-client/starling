@@ -131,6 +131,13 @@ fn main() {
         "target": target,
         "side": "client",
         "game_features": features,
+        // What a published SDK records for its registry build and facades, required since
+        // Sunrise's debt-p3-117; the phone's patch tool reads none of it (the defaults these had).
+        "registry_lock": "",
+        "registry_patches": {},
+        "native_links": [],
+        "facade_crates": [],
+        "slices": {"runtime": [], "api": []},
     }))
     .unwrap_or_else(|e| fail(format!("identity: {e}")));
     let mixins = MixinsIdentity::resolve(&bundles, None).unwrap_or_else(|e| fail(e));

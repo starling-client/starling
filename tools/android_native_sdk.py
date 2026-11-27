@@ -230,6 +230,23 @@ def own_crate(at: Path, name: str, spec: dict) -> Path:
     return path
 
 
+FORBID = re.compile(r"#!\[\s*forbid\s*\(([^\]]*?)\)\s*\]")
+
+
+def entry_allowed(root: str) -> str:
+    """A mod's crate root that lets the entry module the store adds to it (its exports are `#[unsafe(no_mangle)]`)
+    use unsafe code: `unsafe_code` moves from any `#![forbid(...)]` to `#![deny(...)]`, which the module's own
+    `#[allow(unsafe_code)]` can lift, so the mod's code is held to it as before. Sunrise's own route compiles the
+    entry as a crate apart; a mod with `[native.*]` tables gets one here too."""
+    def one(match: re.Match) -> str:
+        lints = [lint.strip() for lint in match.group(1).split(",") if lint.strip()]
+        if "unsafe_code" not in lints:
+            return match.group(0)
+        rest = [lint for lint in lints if lint != "unsafe_code"]
+        return (f"#![forbid({', '.join(rest)})]\n" if rest else "") + "#![deny(unsafe_code)]"
+    return FORBID.sub(one, root)
+
+
 def package_manifest(mod_id: str, version: str, cargo: dict, work: Path | None = None,
                      crate_type: str = "dylib") -> str:
     """The mod's Cargo manifest as a package of this workspace: its own dependencies, with the pinned SDK's API
@@ -690,8 +707,10 @@ def stage_package(path: Path, folder: Path, template: str, commit: str, release:
         entry = entry.replace(f"/* {marker} */", value)
     if not tables:
         (work / "src" / "starling_native_entry.rs").write_text(entry)
-        with open(work / "src" / "lib.rs", "a", encoding="utf-8") as lib:
-            lib.write('\n#[path = "starling_native_entry.rs"]\nmod starling_native_entry;\n')
+        root = work / "src" / "lib.rs"
+        root.write_text(entry_allowed(root.read_text(encoding="utf-8"))
+                        + '\n#[allow(unsafe_code)]\n#[path = "starling_native_entry.rs"]\nmod starling_native_entry;\n',
+                        encoding="utf-8")
     else:
         library = folder / f"{mod_id}-library"
         (library / "src").mkdir(parents=True)
