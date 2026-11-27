@@ -164,6 +164,13 @@ jobs:
           path: target/android/lib*-symbols.so
           if-no-files-found: ignore
           retention-days: 90
+      # symbols-v0.9.0 only: the game's dylib before build_apk.py strips it (rust_dylibs), its symbol table whole.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-mod-host-unstripped-${{ matrix.abi }}
+          path: target/${{ matrix.target }}/fast/deps/libhorizon_mod_host.so
+          if-no-files-found: error
+          retention-days: 7
       # With the cargo-horizon-mod and the Rust build_apk.py built the wasm std with (build_apk.py `wasm_std`).
       - name: Build the wasm probe mod
         if: inputs.wasm_probe && matrix.abi == 'arm64-v8a'
