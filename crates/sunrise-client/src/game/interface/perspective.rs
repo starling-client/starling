@@ -12,15 +12,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 use sunrise_client::{
-<<<<<<< HEAD
-    blocks::BlockFacts,
-    camera::{CameraEntity, LivingCamera},
-||||||| 46c00106def
     blocks::BlockFacts,
     camera::{CameraEntity, CameraType, LivingCamera},
-=======
-    camera::{CameraEntity, CameraType, LivingCamera},
->>>>>>> ed6772e2118
     collisions::SceneCollisions,
 };
 // Starling: open to the crate, as native mods made for Sunrise import it from here
@@ -953,30 +946,10 @@ impl Game<'_> {
         let model = frame_draw.model();
         if show_layers {
             let chest = self.armor[1].as_ref().map(|s| &*s.item);
-<<<<<<< HEAD
-            // CapeLayer: no cape on an invisible player (`isInvisible`, whoever looks).
-            if !self.own_invisible() {
-                self.player_cape_geometry(
-                    m,
-                    chest,
-                    camera,
-                    alpha as f32,
-                    (
-                        self as &dyn sunrise_client::mobs::render::RenderDataSource,
-                        packed,
-                    ),
-                    out,
-                );
-||||||| 46c00106def
-            // CapeLayer: no cape on an invisible player (`isInvisible`, whoever looks).
-            if !self.own_invisible() {
-                self.player_cape_geometry(m, chest, camera, alpha as f32, packed, out);
-=======
             let invisible = self.own_invisible();
             // CapeLayer and Deadmau5EarsLayer: `!state.isInvisible`, whoever sees the body.
             if !invisible && !hidden.contains(mod_api::StockLayer::Cape) {
-                self.player_cape_geometry(m, chest, camera, alpha as f32, packed, out);
->>>>>>> ed6772e2118
+                self.player_cape_geometry(m, chest, camera, alpha as f32, (self as &dyn sunrise_client::mobs::render::RenderDataSource, packed), out);
             }
             if !invisible && !hidden.contains(mod_api::StockLayer::Deadmau5Ears) {
                 self.player_ears_geometry(m, &name, camera, alpha as f32, packed, out);
@@ -1124,35 +1097,21 @@ impl Game<'_> {
         let mut verts = Vec::new();
         // A spectator preview still draws its own model: the poses'
         // visibility hides body parts, leaving the head and its layers.
-<<<<<<< HEAD
-        let body = self.own_body_visible() || self.spectator();
-        // Starling: the title screen's player comes before the world's mob data: its own stands
-        // in (`MobData` is a source too, without the world's equipment).
-        let data: &dyn sunrise_client::mobs::render::RenderDataSource =
-            if in_world { self } else { data };
-        let armour = if in_world {
-            self.player_armor_layers()
-        } else {
-            Vec::new()
-        };
-||||||| 46c00106def
-        let body = self.own_body_visible() || self.spectator();
-        let (data, armour) = (
-            self as &dyn sunrise_client::mobs::render::RenderDataSource,
-            self.player_armor_layers(),
-        );
-=======
         let body = self.own_body_visible() || self.own_player_is_spectator();
         let resolved = self.entity_layers(&m);
         let hidden = resolved.hidden;
         let layers = resolved.layers;
         let mut frame_draw = FrameDraw::new(layers.is_some());
-        let (data, armour) = (
-            self as &dyn sunrise_client::mobs::render::RenderDataSource,
-            self.player_armor_layers(hidden),
-        );
+        // Starling: the title screen's player comes before the world's mob data: its own stands
+        // in (`MobData` is a source too, without the world's equipment).
+        let data: &dyn sunrise_client::mobs::render::RenderDataSource =
+            if in_world { self } else { data };
+        let armour = if in_world {
+            self.player_armor_layers(hidden)
+        } else {
+            Vec::new()
+        };
         let light = 240 | 240 << 8;
->>>>>>> ed6772e2118
         // A screen preview: custom entity model animations see is_in_gui = 1.
         sunrise_client::mobs::cem_anim::in_gui(|| {
             if body {
@@ -1181,47 +1140,22 @@ impl Game<'_> {
                 );
             }
         });
-<<<<<<< HEAD
         let chest = self.armor[1]
             .as_ref()
             .filter(|_| in_world)
             .map(|s| &*s.item);
-        if !self.own_invisible() {
-            self.player_cape_geometry(&m, chest, camera, 1.0, (data, 240 | 240 << 8), &mut verts);
-||||||| 46c00106def
-        let chest = self.armor[1].as_ref().map(|s| &*s.item);
-        if !self.own_invisible() {
-            self.player_cape_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, &mut verts);
-=======
-        let chest = self.armor[1].as_ref().map(|s| &*s.item);
         let invisible = self.own_invisible();
         let name = self.own_profile_name();
         if !invisible && !hidden.contains(mod_api::StockLayer::Cape) {
-            self.player_cape_geometry(&m, chest, camera, 1.0, light, &mut verts);
+            self.player_cape_geometry(&m, chest, camera, 1.0, (data, light), &mut verts);
         }
         if !invisible && !hidden.contains(mod_api::StockLayer::Deadmau5Ears) {
-            self.player_ears_geometry(&m, &name, camera, 1.0, light, &mut verts);
->>>>>>> ed6772e2118
+            self.player_ears_geometry_from(&m, &name, camera, 1.0, (data, light), &mut verts);
         }
         // `WingsLayer` draws through `RenderTypes.armorCutoutNoCull`: the
         // wings' faces show from both sides (the elytra texture is empty on
         // the face that looks at the body).
         let wings_start = verts.len();
-<<<<<<< HEAD
-        self.player_elytra_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, &mut verts);
-        let wings = wings_start..verts.len();
-        self.shoulder_parrots_geometry(&m, camera, 1.0, 240 | 240 << 8, &mut verts);
-        if in_world {
-            self.held_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, None, &mut verts);
-        }
-        self.head_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, &mut verts);
-||||||| 46c00106def
-        self.player_elytra_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, &mut verts);
-        let wings = wings_start..verts.len();
-        self.shoulder_parrots_geometry(&m, camera, 1.0, 240 | 240 << 8, &mut verts);
-        self.held_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, None, &mut verts);
-        self.head_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, &mut verts);
-=======
         if !hidden.contains(mod_api::StockLayer::Wings) {
             self.player_elytra_geometry(&m, chest, camera, 1.0, light, &mut verts);
         }
@@ -1234,7 +1168,9 @@ impl Game<'_> {
             alpha: 1.0,
             light,
         };
-        self.held_item_geometry(&m, view, false, hidden, None, &mut verts);
+        if in_world {
+            self.held_item_geometry(&m, view, false, hidden, None, &mut verts);
+        }
         if !hidden.contains(mod_api::StockLayer::CustomHead) {
             self.head_item_geometry(&m, camera, 1.0, light, false, &mut verts);
         }
@@ -1254,7 +1190,8 @@ impl Game<'_> {
             supported: resolved.supported,
             hidden,
         };
-        if let Some(redrawn_wings) = self.mod_layer_geometry(
+        if in_world
+            && let Some(redrawn_wings) = self.mod_layer_geometry(
             &m,
             Some(who),
             frame_draw.model(),
@@ -1267,7 +1204,6 @@ impl Game<'_> {
         ) {
             wings = redrawn_wings;
         }
->>>>>>> ed6772e2118
         let height = if m.extra.crouching { 1.5 } else { 1.8 };
         // PictureInPictureRenderer: the box centre, (size, size, -size);
         // then the translation and Rz(pi) * Rx(y_angle * 20 degrees).

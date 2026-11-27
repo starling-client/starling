@@ -114,13 +114,7 @@ impl Game<'_> {
         ) as f32
             / 100.0;
         match &self.shader_choice {
-            Some((name, profile))
-                if profile == AUTO_PROFILE
-                    && !light_shader_pack(name)
-                    && !sunrise_shader_api::package::is_pack(
-                        &Self::shader_packs_dir().join(name),
-                    ) =>
-            {
+            Some((name, profile)) if profile == AUTO_PROFILE && !light_shader_pack(name) => {
                 chosen.min(sunrise_client::graphics::auto_shader_scale())
             }
             _ => chosen,

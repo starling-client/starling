@@ -432,11 +432,13 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
                 sunrise_mod_package::Package::read(&staged)?.manifest.id
             )
         } else if native_shader || name.to_ascii_lowercase().ends_with(".sshader") {
-            let pack = sunrise_shader_api::Pack::read(&staged)?;
-            sunrise_shader_api::check(&pack).map_err(|e| format!("Invalid shader pack: {e:?}"))?;
-            let mut path = PathBuf::from(name);
-            path.set_extension("sshader");
-            path.to_string_lossy().into_owned()
+            // Sunrise removed its own (WGSL) shader pack format: a pick of one is turned off
+            // (`shader_pack_unsupported`), so none is imported.
+            return Err(
+                "Sunrise's own shader pack format (.sshader) was removed: use an OptiFine or \
+                 Iris shader pack"
+                    .into(),
+            );
         } else {
             name
         };

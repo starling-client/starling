@@ -151,16 +151,13 @@ pub(super) struct ModsState {
     /// The entries of the mods' datapack registries this world session has published, at the
     /// generation of the load or reload that built them; `None` when no mod declared one.
     pub(super) datapack_registries: Option<Arc<mod_api::DatapackRegistrySet>>,
-<<<<<<< ours
     /// Starling: what the content build tells the loading screen while it works
     /// ([`ContentNote`]'s line), and `None` once it is done. The menu's loader sets it.
     pub(super) note: Option<Arc<dyn Fn(Option<String>) + Send + Sync>>,
-=======
     /// Decoded vanilla codec values (`IntProvider`, `BlockStateProvider`, `BlockPredicate`,
     /// `HolderSet`) for [`Self::datapack_registries`], swapped atomically on load and `/reload`.
     pub(super) datapack_vanilla_values:
         Option<Arc<super::native_datapack_values::DatapackVanillaValues>>,
->>>>>>> theirs
 }
 
 impl ModsState {
@@ -417,7 +414,7 @@ pub(super) fn install_registration_data(
     let packages = mod_api::__private::loaded_mods();
     // Android starts before the game files exist (its setup screen prepares them, no launcher did):
     // with none yet there is nothing to read, and no native mod runs in the APK's own game.
-    let names = match builtin_registry_names(root) {
+    let names = match registration_registry_names(root) {
         Ok(names) => names,
         Err(_) if cfg!(target_os = "android") && !root.join("sunrise-resources.json").is_file() => {
             BTreeMap::new()
@@ -426,11 +423,7 @@ pub(super) fn install_registration_data(
     };
     (mod_api::__private::platform::platform()?.install_registration_data)(
         mod_api::__private::RegistrationData::new(
-<<<<<<< ours
             names,
-=======
-            registration_registry_names(root)?,
->>>>>>> theirs
             sunrise_world::native_load_context::capture_settings(
                 &Game::mod_data_root(),
                 packages.ids(),
@@ -1435,11 +1428,6 @@ fn content_overlay_with_refusals(
         &overrides,
     )
     .map_err(|error| error.to_string())?;
-<<<<<<< ours
-    // The game's derived caches (`logging::cache_dir`): the folder the game runs in, or Android's
-    // private files. Android's game folder is in shared storage, which refuses the overlay's links:
-    // a phone with a code or content mod on fell back to its setup ("Permission denied").
-=======
     for &index in &order {
         let source = &packages[index];
         if !source.content_only || !mods.iter().any(|loaded| loaded.id == source.manifest.id) {
@@ -1459,7 +1447,9 @@ fn content_overlay_with_refusals(
             ));
         }
     }
->>>>>>> theirs
+    // The game's derived caches (`logging::cache_dir`): the folder the game runs in, or Android's
+    // private files. Android's game folder is in shared storage, which refuses the overlay's links:
+    // a phone with a code or content mod on fell back to its setup ("Permission denied").
     let cache = sunrise_client::logging::cache_dir();
     // Content admission and the live code-dispatch boundary jointly determine
     // what loaded. Namespaces and raw startup metadata cannot answer this.
@@ -2171,9 +2161,10 @@ fn not_built(
     paths.sort();
     let mut out: Vec<Installed> = Vec::new();
     for path in paths {
-<<<<<<< ours
-        let bundle = match sunrise_mod_package::index::native::Bundle::read(&path) {
-            Ok(bundle) => bundle,
+        // The row names the mod, so the manifest is all it needs: the package's other entries,
+        // its source among them, stay unread.
+        let package = match sunrise_mod_package::Package::read(&path) {
+            Ok(package) => package,
             // Said on its row: a file left out without a word looks like the folder isn't read.
             Err(e) => {
                 let title = path
@@ -2194,25 +2185,13 @@ fn not_built(
                 }
                 continue;
             }
-=======
-        // The row names the mod, so the manifest is all it needs: the package's other entries,
-        // its source among them, stay unread.
-        let Ok(package) = sunrise_mod_package::Package::read(&path) else {
-            continue;
->>>>>>> theirs
         };
-<<<<<<< ours
-        let (id, version) = (bundle.manifest.id.clone(), bundle.manifest.version.clone());
-        let listed = rows.iter().chain(&out).any(|row| row.id == id);
-        if !listed && !built.iter().any(|b| b.id == id) {
-=======
         if !package.is_native() {
             continue;
         }
-        let m = package.manifest;
-        let listed = rows.iter().chain(&out).any(|row| row.id == m.id);
-        if !listed && !built.iter().any(|b| b.id == m.id) {
->>>>>>> theirs
+        let (id, version) = (package.manifest.id.clone(), package.manifest.version.clone());
+        let listed = rows.iter().chain(&out).any(|row| row.id == id);
+        if !listed && !built.iter().any(|b| b.id == id) {
             out.push(Installed {
                 title: format!("{} {version}", display_name(&id)),
                 id,
@@ -2524,17 +2503,12 @@ impl Game<'_> {
     /// The player turned content mods on or off in Options > Mods: those with only assets and data apply now,
     /// through the resource reload and then the
     /// server's data reload (`mods_reloaded`); those that add blocks, items or
-<<<<<<< ours
     /// worldgen wait for a restart, and the Mods page says so.
     ///
     /// Starling: with `apply` false only the Mods page's note follows the switches. Options apply
     /// them as they close, in one reload: a reload for every switch put the loading screen up
     /// between two taps, and the switches made under it were lost.
     pub(super) fn switch_mods(&mut self, apply: bool) {
-=======
-    /// worldgen wait for a restart.
-    pub(super) fn switch_mods(&mut self) {
->>>>>>> theirs
         let Some(applied) = self.mods.applied.clone() else {
             return;
         };

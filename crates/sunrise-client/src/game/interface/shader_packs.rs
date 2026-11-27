@@ -1,16 +1,9 @@
-<<<<<<< ours
-//! Shader packs: the one picked on the Shader Packs page, with its profile
-//! (`Graphics::shader_choice`; `SUNRISE_SHADER_PACK` for development), runs `shaderpacks/<name>`
-//! (a folder or a zip beside `options.txt`) over the world; Sunrise's own packs go to
-//! `game/modding/native_shaders.rs`. The programs of the current dimension's folder are loaded when the
-//! dimension or the choice changes (spec 1.2).
-=======
-//! Shader packs: the one picked on Options > Sunrise Settings > Shaders, or
-//! `SUNRISE_SHADER_PACK=<name>` (development; it wins over the pick), runs `shaderpacks/<name>`
-//! (a folder or a zip beside `options.txt`) over the world. The programs of the current
-//! dimension's folder are loaded when the dimension changes (spec 1.2). A pick in the removed
-//! WGSL format is turned off with a note (`shader_pack_unsupported`).
->>>>>>> theirs
+//! Shader packs: the one picked on the Shader Packs page (Sunrise Settings > Shaders), with its
+//! profile (`Graphics::shader_choice`; `SUNRISE_SHADER_PACK=<name>` for development, winning over
+//! the pick), runs `shaderpacks/<name>` (a folder or a zip beside `options.txt`) over the world.
+//! The programs of the current dimension's folder are loaded when the dimension or the choice
+//! changes (spec 1.2). A pick in the removed WGSL format is turned off with a note
+//! (`shader_pack_unsupported`).
 
 use super::remote_camera::CameraFogEffects;
 use sunrise_client::camera::CameraFluid;
@@ -559,7 +552,6 @@ impl Game<'_> {
         } else {
             path.to_string_lossy().into_owned()
         };
-<<<<<<< ours
         // A new choice, once the options close (each load takes seconds): what ran for the old
         // one goes, of either kind.
         let choice = self
@@ -571,11 +563,7 @@ impl Game<'_> {
             && self.screen != super::Screen::Options
         {
             self.shader_choice = choice;
-            self.native_shaders.select(&picked);
-=======
-        if self.native_shaders.picked != picked {
             self.native_shaders.picked = picked.clone();
->>>>>>> theirs
             self.set_translucent_layers(Vec::new());
             self.pack_ids = None;
             self.pack_making = None;
@@ -661,20 +649,7 @@ impl Game<'_> {
                         let mut macros = Macros::standard();
                         renderer.define_pack_macros(&mut macros);
                         // Its conditionals test the pack's options too.
-<<<<<<< ours
-                        let (mut properties, notes) =
-                            sunrise_shaders::read_properties(&pack, &mut macros);
-                        for note in notes {
-                            log::warn!("shader pack {name}: {note}");
-                        }
-                        for note in &properties.notes {
-                            log::warn!(
-                                "shader pack {name}: shaders.properties:{}: {}",
-                                note.line,
-                                note.message
-                            );
-=======
-                        let (properties, log) = loaded_properties(
+                        let (mut properties, log) = loaded_properties(
                             &pack,
                             &mut macros,
                             super::native_shaders::linear_frame_switch(),
@@ -684,7 +659,6 @@ impl Game<'_> {
                         );
                         for line in log {
                             log::warn!("shader pack {name}: {line}");
->>>>>>> theirs
                         }
                         let chosen = chosen_shader_options(name);
                         let values = picked_values(
@@ -842,12 +816,7 @@ impl Game<'_> {
                         self.pack_making = Some(Making { ids: pack_ids });
                     }
                     Err(e) => {
-<<<<<<< ours
-                        remember(&path, fingerprint(&path), None);
-=======
                         remember(&path, fingerprint(&path), false);
-                        self.pack_ids = None;
->>>>>>> theirs
                         log::warn!("shader pack {name}: {e}");
                         // Without a pack this can't fail.
                         let _ = renderer.set_shader_pack(dimension, None, &[]);
