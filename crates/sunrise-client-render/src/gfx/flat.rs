@@ -197,19 +197,9 @@ pub fn wanted(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
 
 /// Whether frames without a shader pack's terrain draw flat: where the backend
 /// emulates multi-draw (Metal, past `MIN_SECTIONS`), on Intel Gen11/Gen12's Vulkan
-<<<<<<< HEAD
 /// driver, on Qualcomm's Adreno under DirectX 12 or on Adreno's Vulkan, on PowerVR's Vulkan, or
 /// with `SUNRISE_FLAT_DRAWS=1`. Elsewhere per-section draws stay.
-pub fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
-||||||| 46c00106def
-/// driver, on Qualcomm's Adreno under DirectX 12, or with `SUNRISE_FLAT_DRAWS=1`.
-/// Elsewhere per-section draws stay.
-pub fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
-=======
-/// driver, on Qualcomm's Adreno under DirectX 12, or with `SUNRISE_FLAT_DRAWS=1`.
-/// Elsewhere per-section draws stay.
 pub(crate) fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
->>>>>>> ed6772e2118
     std::env::var("SUNRISE_FLAT_DRAWS").as_deref() == Ok("1")
         || info.backend == wgpu::Backend::Metal
         || is_broken_intel_vulkan(info)
@@ -295,19 +285,8 @@ pub(crate) fn is_broken_intel_vulkan(info: &wgpu::AdapterInfo) -> bool {
 
 fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
     let flags = adapter.get_downlevel_capabilities().flags;
-<<<<<<< HEAD
-    let limits = device.limits();
-    flags.contains(wgpu::DownlevelFlags::VERTEX_STORAGE | wgpu::DownlevelFlags::COMPUTE_SHADERS)
-        && limits.max_storage_buffers_per_shader_stage >= 3
-||||||| 46c00106def
-    let limits = device.limits();
-    flags.contains(wgpu::DownlevelFlags::VERTEX_STORAGE | wgpu::DownlevelFlags::COMPUTE_SHADERS)
-        && limits.max_storage_buffers_per_shader_stage >= 3
-        && limits.max_storage_buffer_binding_size >= super::arena::PAGE_BYTES
-=======
     pages_readable(adapter, device)
         && flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
-        && device.limits().max_storage_buffer_binding_size >= super::arena::PAGE_BYTES
 }
 
 /// Whether vertex shaders can read the section arena's pages as storage: a shader pack's
@@ -320,7 +299,6 @@ pub(crate) fn pages_readable(adapter: &wgpu::Adapter, device: &wgpu::Device) -> 
         .flags
         .contains(wgpu::DownlevelFlags::VERTEX_STORAGE)
         && device.limits().max_storage_buffers_per_shader_stage >= 3
->>>>>>> ed6772e2118
 }
 
 fn storage(binding: u32, stage: wgpu::ShaderStages, read_only: bool) -> wgpu::BindGroupLayoutEntry {

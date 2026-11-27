@@ -1263,22 +1263,15 @@ impl Item {
     fn steps(self, s: &Settings, out: &EffectiveOutput) -> bool {
         self.switch(s, out).is_none()
             && self.slider(s).is_none()
-<<<<<<< HEAD
             && !matches!(
                 self,
                 Item::Sunrise(
                     H::HdrCalibrate
-                        | H::ShaderPacks
                         | H::PerfCalibrate
                         | H::PerfCalibrateNote
                         | H::GpuDrivers
                 )
             )
-||||||| 46c00106def
-            && !matches!(self, Item::Sunrise(H::HdrCalibrate | H::ShaderPacks))
-=======
-            && !matches!(self, Item::Sunrise(H::HdrCalibrate))
->>>>>>> ed6772e2118
     }
     /// On/off settings and their value.
     pub fn switch(self, s: &Settings, out: &EffectiveOutput) -> Option<bool> {
@@ -1412,13 +1405,9 @@ impl Item {
                         | H::ShadowCache
                         | H::GraphicsApi
                         | H::TranslucentBatching
-<<<<<<< HEAD
                         | H::RayTracing
                         | H::MaliFastTerrain
-||||||| 46c00106def
-=======
                         | H::GpuCulling
->>>>>>> ed6772e2118
                         | H::HdrSmoothGradients
                 )
                 | Item::Vanilla(
@@ -1657,30 +1646,8 @@ impl Screen for GraphicsScreen {
                 vec![Output::Event(Event::Changed)]
             }
             Item::Sunrise(H::HdrCalibrate) => vec![Output::Push(OptionsPage::HdrCalibration)],
-<<<<<<< HEAD
             Item::Sunrise(H::PerfCalibrate) => vec![Output::Push(OptionsPage::PerfCalibration)],
             Item::Sunrise(H::GpuDrivers) => vec![Output::Push(OptionsPage::GpuDrivers)],
-            // The list of either kind, as the Shaders page opens it from anywhere.
-            Item::Sunrise(H::ShaderPacks) => {
-                s.shader_options = None;
-                vec![
-                    Output::Event(Event::ListShaderPacks),
-                    Output::Event(Event::OpenShaderOptions),
-                    Output::Push(OptionsPage::ShaderPacks),
-                ]
-            }
-||||||| 46c00106def
-            // The list of either kind, as the Shaders page opens it from anywhere.
-            Item::Sunrise(H::ShaderPacks) => {
-                s.shader_options = None;
-                vec![
-                    Output::Event(Event::ListShaderPacks),
-                    Output::Event(Event::OpenShaderOptions),
-                    Output::Push(OptionsPage::ShaderPacks),
-                ]
-            }
-=======
->>>>>>> ed6772e2118
             _ => {
                 item.cycle(s, back, self.framebuffer, &self.output);
                 vec![Output::Event(Event::Changed)]

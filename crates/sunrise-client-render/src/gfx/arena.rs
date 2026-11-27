@@ -306,25 +306,13 @@ impl Arena {
         usage: wgpu::BufferUsages,
         page_bytes: u64,
     ) -> Self {
-<<<<<<< ours
-        // Pages of `page_bytes`, or less where the device's buffers (or the
-        // storage bindings that read them whole) are smaller.
-        let limits = device.limits();
-        let mut bytes = limits.max_buffer_size.min(page_bytes);
-        if usage.contains(wgpu::BufferUsages::STORAGE) {
-            bytes = bytes.min(limits.max_storage_buffer_binding_size);
-        }
-        let page_limit = (bytes / stride) / GRAIN * GRAIN;
+        let page_limit = Self::page_limit(&device.limits(), stride, usage, page_bytes);
         let ceiling = page_ceiling(page_bytes);
         let growth_limit = (ceiling < page_bytes)
-            .then(|| (ceiling.min(bytes) / stride / GRAIN * GRAIN).max(GRAIN));
+            .then(|| ((ceiling / stride) / GRAIN * GRAIN).min(page_limit).max(GRAIN));
         let capacity = capacity
             .next_multiple_of(GRAIN)
             .min(growth_limit.unwrap_or(page_limit).min(page_limit));
-=======
-        let page_limit = Self::page_limit(&device.limits(), stride, usage, page_bytes);
-        let capacity = capacity.next_multiple_of(GRAIN).min(page_limit);
->>>>>>> theirs
         Self {
             pages: Vec::new(),
             page_bytes: 0,
@@ -1021,13 +1009,14 @@ impl Arena {
             {
                 self.page_bytes -= p.bytes();
                 emptied.push(p);
-                released.extend(p.normals);
             }
         }
-        let released = emptied
-            .into_iter()
-            .filter_map(|p| self.keep_spare(p))
-            .collect();
+        // Starling keeps one emptied page as a spare (`keep_spare`); Sunrise's normal streams go back too.
+        let mut released = Vec::new();
+        for mut page in emptied {
+            released.extend(page.normals.take());
+            released.extend(self.keep_spare(page));
+        }
         if self.closing.is_some_and(|page| !self.has_page(page)) {
             self.closing = None;
         }
@@ -1041,12 +1030,13 @@ impl Arena {
     pub fn clear(&mut self) -> Vec<wgpu::Buffer> {
         self.closing = None;
         self.page_bytes = 0;
-<<<<<<< ours
         let pages: Vec<Page> = self.pages.drain(..).flatten().collect();
-        pages
-            .into_iter()
-            .filter_map(|p| self.keep_spare(p))
-            .collect()
+        let mut released = Vec::new();
+        for mut page in pages {
+            released.extend(page.normals.take());
+            released.extend(self.keep_spare(page));
+        }
+        released
     }
 }
 
@@ -1064,13 +1054,6 @@ fn page_ceiling(page_bytes: u64) -> u64 {
         32 << 20
     } else {
         page_bytes
-=======
-        self.pages
-            .drain(..)
-            .flatten()
-            .flat_map(|p| std::iter::once(p.buffer).chain(p.normals))
-            .collect()
->>>>>>> theirs
     }
 }
 

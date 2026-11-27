@@ -1527,24 +1527,15 @@ impl Audio {
     }
     pub fn with_device(root: &ResourceSource, device_name: &str) -> Self {
         Self::with_output(root, SoundRegistry::load(root), true, device_name)
-<<<<<<< HEAD
     }
     /// With the sound events already read (`SoundRegistry::load`, on another thread), on the
     /// system's default output (`set_device` moves it).
     pub fn with_registry(root: &ResourceSource, registry: SoundRegistry) -> Self {
         Self::with_output(root, registry, true, "")
-||||||| 46c00106def
-        Self::with_output(root, true, device_name)
-=======
->>>>>>> ed6772e2118
     }
     /// Keep the client's sound registry but open no output device.
     pub fn silent(root: &ResourceSource) -> Self {
         Self::with_output(root, SoundRegistry::load(root), false, "")
-<<<<<<< HEAD
-||||||| 46c00106def
-        Self::with_output(root, false, "")
-=======
     }
     /// Dedicated servers send sound events to clients without opening their sound files.
     pub fn for_server() -> Self {
@@ -1554,7 +1545,6 @@ impl Audio {
             false,
             "",
         )
->>>>>>> ed6772e2118
     }
     /// The output device asked for (`soundDevice`), empty for the system's default; the
     /// default plays when that one can't be opened, as in vanilla.
