@@ -13348,7 +13348,7 @@ impl Game<'_> {
     fn handle_window_event_inner_as(
         &mut self,
         event_loop: &dyn EventLoopCtl,
-        event: WindowEvent,
+        mut event: WindowEvent,
         cursor_sample: Option<sunrise_client::window::PointerSample>,
         mouse_press_millis: Option<u64>,
         origin: input_trace::InputOrigin,
