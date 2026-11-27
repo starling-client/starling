@@ -91,12 +91,8 @@ fn a_shadow_program_with_every_output_drops_the_boats_patches_not_its_water() {
             atlas: None,
             ids: None,
             cull: true,
-<<<<<<< HEAD
             prepass: false,
-||||||| 46c00106def
-=======
             pages: false,
->>>>>>> ed6772e2118
         })
     };
     let outputs = gpu.device.limits().max_inter_stage_shader_variables;

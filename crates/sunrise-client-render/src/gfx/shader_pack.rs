@@ -52,12 +52,8 @@ impl Renderer {
                     material_maps: true,
                     ids: None,
                     cull: true,
-<<<<<<< HEAD
                     prepass: false,
-||||||| 46c00106def
-=======
                     pages,
->>>>>>> ed6772e2118
                 }),
                 block_ids,
                 celestial: self
@@ -256,7 +252,10 @@ impl Renderer {
             .filter(|_| flat)
             .map(|f| f.draw_layout.clone());
         let terrain = self.pack_atlas.is_some();
-        let draws_sections = PackLoading::draws_of(&pack, terrain);
+        // Starling translates the pack on the build thread (`pack`), so what its programs draw is known
+        // once it is built: until then the game's own terrain layout stays (Sunrise's `draws_of` needs the
+        // translated pack here, which on a phone took seconds of the frame).
+        let draws_sections = PackDraws::default();
         let clouds = self.cloud_bindings.clone();
         let mod_runtime = crate::mod_pipelines::pack_runtime_specs();
         let mod_set1_owned: Vec<Option<wgpu::BindGroupLayout>> = self
@@ -298,12 +297,8 @@ impl Renderer {
                     material_maps: true,
                     ids: None,
                     cull: true,
-<<<<<<< HEAD
                     prepass: false,
-||||||| 46c00106def
-=======
                     pages,
->>>>>>> ed6772e2118
                 }),
                 block_ids: &block_ids,
                 celestial,
@@ -311,14 +306,9 @@ impl Renderer {
                 weather: true,
                 hand: true,
             };
-<<<<<<< HEAD
-            pack_post::PackPost::new(&device, &queue, &adapter, pack(), format, world, &cancelled)
-||||||| 46c00106def
-            pack_post::PackPost::new(&device, &queue, &adapter, pack, format, world, &cancelled)
-=======
             let post = pack_post::PackPost::new_with_mods(
                 (&device, &queue, &adapter),
-                pack,
+                pack(),
                 format,
                 world,
                 mod_runtime
@@ -328,7 +318,6 @@ impl Renderer {
             );
             // The ids come back with it, for `install_shader_pack`.
             (post, block_ids)
->>>>>>> ed6772e2118
         };
         // A pack is not the game's code: a panic building it turns the pack off (#3525).
         let thread = std::thread::Builder::new()
@@ -418,142 +407,6 @@ impl Renderer {
     pub fn set_pack_lava_layers(&mut self, layers: Vec<u16>) {
         self.pack_lava_layers = layers;
     }
-<<<<<<< HEAD
-    /// Runs the sky, material and post stages of one of Sunrise's own shader packs from now
-    /// on (`None`: no pack), with its options' values; replaces a `shaders/` pack. Returns the
-    /// stages' labels; on an error the pack that ran keeps running.
-    pub fn set_native_shader_pack(
-        &mut self,
-        pack: Option<(
-            sunrise_shader_api::Report,
-            Vec<(String, f64)>,
-            Vec<(u32, u32)>,
-            Vec<(u32, u32)>,
-            block_light::LightTable,
-        )>,
-    ) -> std::result::Result<Vec<String>, String> {
-        let linear = pack
-            .as_ref()
-            .is_some_and(|p| p.0.manifest.api == sunrise_shader_api::Api::V0_2);
-        if (linear || self.output.frame.format == LINEAR_FRAME)
-            && linear != (self.output.frame.format == LINEAR_FRAME)
-            && !std::mem::replace(&mut self.frame_kept_logged, true)
-        {
-            log::info!(
-                "Sunrise renderer: the {:?} frame stays until the renderer is made again; a shader pack picked or dropped since runs on it",
-                self.output.frame.format
-            );
-        }
-        let Some((report, constants, sprite_tags, sprite_materials, lights)) = pack else {
-            self.native = None;
-            return Ok(Vec::new());
-        };
-        // Hardware ray tracing needs a ray-query device: refuse the pack with its name
-        // rather than failing its pipelines' TLAS binding.
-        if report.manifest.ray_tracing.is_some() && !self.ray_tracing() {
-            return Err(format!(
-                "{} needs a ray-tracing GPU (Advanced graphics' Ray Tracing): \
-                 this device offers no ray queries",
-                report.manifest.name
-            ));
-        }
-        // The TLAS the pack's bind groups share: created empty here, filled as sections
-        // build BLASes. The object is stable, so the groups stay valid across rebuilds.
-        let tlas = report
-            .manifest
-            .ray_tracing
-            .as_ref()
-            .map(|_| self.rt.ensure_tlas(&self.device).clone());
-        let terrain = native_material::TerrainShape {
-            globals: &self.terrain_layout,
-            flat: self.flat.as_ref().map(|f| &f.draw_layout),
-            sprites: self.terrain_sprites,
-            format: self.output.frame.format,
-            linear: self.output.frame.linear_light,
-            sprite_tags: &sprite_tags,
-            sprite_materials: &sprite_materials,
-            entities: &self.entity_bindings,
-            weather_groups: [&self.weather.entity_layout, &self.weather.time_layout],
-            pbr: self.pbr_maps.as_ref().and_then(|arrays| arrays.first()),
-        };
-        let (pack, labels) = native_pack::NativePack::new(
-            &self.device,
-            &self.queue,
-            &terrain,
-            report,
-            &constants,
-            lights,
-            tlas.as_ref(),
-        )?;
-        self.native = pack.draws().then_some(pack);
-        if self.native.is_some() {
-            self.pack_post = None;
-            self.pack_loading = None;
-            self.pack_atlas = None;
-            self.pack_material_atlases = None;
-        }
-        Ok(labels)
-    }
-||||||| 46c00106def
-    /// Runs the sky, material and post stages of one of Sunrise's own shader packs from now
-    /// on (`None`: no pack), with its options' values; replaces a `shaders/` pack. Returns the
-    /// stages' labels; on an error the pack that ran keeps running.
-    pub fn set_native_shader_pack(
-        &mut self,
-        pack: Option<(
-            sunrise_shader_api::Report,
-            Vec<(String, f64)>,
-            Vec<(u32, u32)>,
-            Vec<(u32, u32)>,
-            block_light::LightTable,
-        )>,
-    ) -> std::result::Result<Vec<String>, String> {
-        let linear = pack
-            .as_ref()
-            .is_some_and(|p| p.0.manifest.api == sunrise_shader_api::Api::V0_2);
-        if (linear || self.output.frame.format == LINEAR_FRAME)
-            && linear != (self.output.frame.format == LINEAR_FRAME)
-            && !std::mem::replace(&mut self.frame_kept_logged, true)
-        {
-            log::info!(
-                "Sunrise renderer: the {:?} frame stays until the renderer is made again; a shader pack picked or dropped since runs on it",
-                self.output.frame.format
-            );
-        }
-        let Some((report, constants, sprite_tags, sprite_materials, lights)) = pack else {
-            self.native = None;
-            return Ok(Vec::new());
-        };
-        let terrain = native_material::TerrainShape {
-            globals: &self.terrain_layout,
-            flat: self.flat.as_ref().map(|f| &f.draw_layout),
-            sprites: self.terrain_sprites,
-            format: self.output.frame.format,
-            linear: self.output.frame.linear_light,
-            sprite_tags: &sprite_tags,
-            sprite_materials: &sprite_materials,
-            entities: &self.entity_bindings,
-            weather_groups: [&self.weather.entity_layout, &self.weather.time_layout],
-            pbr: self.pbr_maps.as_ref().and_then(|arrays| arrays.first()),
-        };
-        let (pack, labels) = native_pack::NativePack::new(
-            &self.device,
-            &self.queue,
-            &terrain,
-            report,
-            &constants,
-            lights,
-        )?;
-        self.native = pack.draws().then_some(pack);
-        if self.native.is_some() {
-            self.pack_post = None;
-            self.pack_atlas = None;
-            self.pack_material_atlases = None;
-        }
-        Ok(labels)
-    }
-=======
->>>>>>> ed6772e2118
     /// What a shader pack's gbuffers programs read from Sunrise's geometry: the sky's, and
     /// terrain's in the pack's block atlas (made here when missing; none when it does not fit).
     pub fn pack_inputs(&mut self) -> sunrise_shaders::GameInputs {
