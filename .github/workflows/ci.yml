@@ -89,7 +89,7 @@ jobs:
           find crates/sunrise-mod-api/src crates/sunrise-mod-vocab/src -name '*.rs' -print0 | xargs -0 rustup run stable rustfmt --edition 2024 --check --config skip_children=true
           find crates/sunrise-client/src/game -name '*.rs' -print0 | xargs -0 rustup run stable rustfmt --edition 2024 --config skip_children=true --check
           rustup run stable rustfmt --edition 2024 --check crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/*.rs crates/sunrise-mod-api-gen/dispatch-tests/src/fixtures/*/*.rs
-          rustup run stable rustfmt --edition 2024 --check crates/sunrise-mod-wasm/wire-loopback/tests/wire_loopback/*.rs
+          # (Sunrise also formats crates/sunrise-mod-wasm/wire-loopback here; Starling has no wire-loopback.)
           cargo +stable clippy --workspace --all-targets -- -D warnings
           # The server build (released as sunrise-engine): the game without sound or controllers.
           cargo +stable clippy -p sunrise-client -p sunrise-game -p sunrise-mod-host --all-targets --no-default-features -- -D warnings
@@ -137,7 +137,8 @@ jobs:
       - name: Test Rust core and voxel kernel correctness
         if: steps.rust.outputs.required != 'false'
         run: |
-          cargo +stable test --workspace --lib --bins --tests
+          # Starling: every failing test in one run, not just the first crate's.
+          cargo +stable test --workspace --lib --bins --tests --no-fail-fast
           cargo +stable test --workspace --doc
       # After the workspace is built: the audit reads sunrise-mod-vocab's generated signatures
       # from the build output, and refuses to pass without them.

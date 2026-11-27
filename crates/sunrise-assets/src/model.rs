@@ -9,10 +9,6 @@ use crate::{
 };
 use serde_json::value::RawValue;
 use std::{collections::BTreeMap, sync::Arc};
-#[path = "model/starling.rs"]
-mod starling;
-#[allow(unused_imports)]
-pub use self::starling::*;
 
 mod root_transform;
 pub use root_transform::RootTransform;
@@ -643,36 +639,5 @@ impl ItemTransforms {
             }
         }
         Ok(Self { contexts })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_composite_model_is_its_childrens_elements_with_their_own_textures() {
-        let json = r##"{"loader":"neoforge:composite","parent":"block/block",
-            "textures":{"particle":"create:block/casing"},
-            "children":{
-                "base":{"textures":{"0":"create:block/base"},
-                    "elements":[{"from":[0,0,0],"to":[16,4,16],"faces":{"up":{"texture":"#0"}}}]},
-                "bulb":{"textures":{"0":"create:block/bulb","1":"#0"},
-                    "elements":[{"from":[6,4,6],"to":[10,8,10],
-                        "faces":{"up":{"texture":"#1"},"down":{"texture":"#particle"}}}]}}}"##;
-        let model = CuboidModel::from_json(json).unwrap();
-        assert_eq!(model.parent.as_deref(), Some("minecraft:block/block"));
-        let elements: Vec<Element> = model.elements.unwrap().into_iter().flatten().collect();
-        let face = |e: &Element, d: Direction| e.faces[&d].as_ref().unwrap().texture.clone();
-        // Each child's #0 its own; a slot a child does not set is the composite's.
-        assert_eq!(face(&elements[0], Direction::Up), "#base_0");
-        assert_eq!(face(&elements[1], Direction::Up), "#bulb_1");
-        assert_eq!(face(&elements[1], Direction::Down), "#particle");
-        assert!(matches!(&model.textures["bulb_1"], TextureSlot::Reference(t) if t == "bulb_0"));
-        assert!(model.textures.contains_key("base_0") && model.textures.contains_key("particle"));
-        // A child naming its parent model is left as it is.
-        let parented =
-            r#"{"loader":"neoforge:composite","children":{"a":{"parent":"block/stone"}}}"#;
-        assert!(flatten_composite(parented).is_none());
     }
 }
