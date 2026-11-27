@@ -199,21 +199,6 @@ mod hardware {
             PadState::default()
         }
     }
-}
-
-/// A build without the `controllers` feature (the server build, which must not need libudev): no
-/// hardware pads, only `sunrise-ctl pad`'s virtual one.
-#[cfg(not(any(feature = "controllers", target_os = "android")))]
-mod hardware {
-    use super::{super::Game, Pads};
-    use serde_json::{Value, json};
-    use sunrise_client::gamepad::{PadState, Pulse, Rumble};
-
-    impl Pads {
-        pub(super) fn read(&mut self) -> PadState {
-            PadState::default()
-        }
-    }
 
     impl Game<'_> {
         pub(super) fn pad_output_off(&mut self) {}
