@@ -268,34 +268,11 @@ impl MobData {
             &sunrise_world::loot::PackOverlay::NONE,
         )
         .unwrap_or_default();
-<<<<<<< HEAD
-        data.villager_hats =
-            std::sync::RwLock::new(super::villager_hats::VillagerHats::load(source));
-        data.armor_atlases = std::sync::RwLock::new(crate::custom_armor::load_from(source));
-        let random = sunrise_optifine::random_textures::RandomTextures::scan(source);
-        let blinks = sunrise_optifine::blink::Blinks::scan(source, &random);
-        let mut emissive = sunrise_optifine::emissive::Emissive::scan(source, &random);
-        emissive.pair_beside(source, blinks.files());
-        data.emissive = std::sync::RwLock::new(std::sync::Arc::new(emissive));
-        data.blinks = std::sync::RwLock::new(blinks);
-        data.random_textures = std::sync::RwLock::new(random);
-        data
-||||||| 46c00106def
-        data.villager_hats =
-            std::sync::RwLock::new(super::villager_hats::VillagerHats::load(source));
-        let random = sunrise_optifine::random_textures::RandomTextures::scan(source);
-        let blinks = sunrise_optifine::blink::Blinks::scan(source, &random);
-        let mut emissive = sunrise_optifine::emissive::Emissive::scan(source, &random);
-        emissive.pair_beside(source, blinks.files());
-        data.emissive = std::sync::RwLock::new(std::sync::Arc::new(emissive));
-        data.blinks = std::sync::RwLock::new(blinks);
-        data.random_textures = std::sync::RwLock::new(random);
-        data
-=======
         if draws {
             data.animations = Self::load_animations(root)?;
             data.villager_hats =
                 std::sync::RwLock::new(super::villager_hats::VillagerHats::load(source));
+            data.armor_atlases = std::sync::RwLock::new(crate::custom_armor::load_from(source));
             let random = sunrise_optifine::random_textures::RandomTextures::scan(source);
             let blinks = sunrise_optifine::blink::Blinks::scan(source, &random);
             let mut emissive = sunrise_optifine::emissive::Emissive::scan(source, &random);
@@ -305,7 +282,6 @@ impl MobData {
             data.random_textures = std::sync::RwLock::new(random);
         }
         Ok(data)
->>>>>>> ed6772e2118
     }
     fn install_vanilla_placements(&mut self, rules: HashMap<String, SpawnRule>) {
         let mut registered = Some(std::collections::HashSet::new());
@@ -390,139 +366,6 @@ impl MobData {
     pub fn biome_has(&self, tag: &str, biome: &str) -> bool {
         self.biome_tags.get(tag).is_some_and(|s| s.contains(biome))
     }
-<<<<<<< HEAD
-    fn from_json(v: &Value) -> Self {
-        let states = v["states"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|s| StateData {
-                path: PathType::from_name(s[0].as_str().unwrap_or("BLOCKED")),
-                flags: s[1].as_u64().unwrap_or(0) as u16,
-                top: s[2].as_f64().unwrap_or(0.0) as f32,
-            })
-            .collect();
-        let placement_rows = v["placements"].as_object();
-        let placements = placement_rows
-            .into_iter()
-            .flatten()
-            .map(|(k, p)| {
-                let placement = match p["placement"].as_str() {
-                    Some("on_ground") => Placement::OnGround,
-                    Some("in_water") => Placement::InWater,
-                    Some("in_lava") => Placement::InLava,
-                    _ => Placement::NoRestrictions,
-                };
-                (k.clone(), placement)
-            })
-            .collect();
-        let heightmaps = placement_rows
-            .into_iter()
-            .flatten()
-            .filter_map(|(k, p)| Some((k.clone(), Heightmap::from_name(p["heightmap"].as_str()?)?)))
-            .collect();
-        let vanilla_spawn_placements = placement_rows.and_then(|rows| {
-            let mut registered = std::collections::HashSet::new();
-            for (id, row) in rows {
-                if row["registered"].as_bool()? {
-                    registered.insert(id.clone());
-                }
-            }
-            Some(registered)
-        });
-        let animations = v["animations"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .map(|(k, a)| (k.clone(), Animation::parse(a)))
-            .collect();
-        Self {
-            resolved: Default::default(),
-            states,
-            placements,
-            heightmaps,
-            animations,
-            villager_hats: Default::default(),
-            armor_atlases: Default::default(),
-            frame_models: Default::default(),
-            cem: Default::default(),
-            random_textures: Default::default(),
-            emissive: Default::default(),
-            blinks: Default::default(),
-            biome_tags: HashMap::new(),
-            pois: Default::default(),
-            species_placements: Default::default(),
-            mod_spawns: Default::default(),
-            vanilla_spawn_placements,
-        }
-    }
-||||||| 46c00106def
-    fn from_json(v: &Value) -> Self {
-        let states = v["states"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|s| StateData {
-                path: PathType::from_name(s[0].as_str().unwrap_or("BLOCKED")),
-                flags: s[1].as_u64().unwrap_or(0) as u16,
-                top: s[2].as_f64().unwrap_or(0.0) as f32,
-            })
-            .collect();
-        let placement_rows = v["placements"].as_object();
-        let placements = placement_rows
-            .into_iter()
-            .flatten()
-            .map(|(k, p)| {
-                let placement = match p["placement"].as_str() {
-                    Some("on_ground") => Placement::OnGround,
-                    Some("in_water") => Placement::InWater,
-                    Some("in_lava") => Placement::InLava,
-                    _ => Placement::NoRestrictions,
-                };
-                (k.clone(), placement)
-            })
-            .collect();
-        let heightmaps = placement_rows
-            .into_iter()
-            .flatten()
-            .filter_map(|(k, p)| Some((k.clone(), Heightmap::from_name(p["heightmap"].as_str()?)?)))
-            .collect();
-        let vanilla_spawn_placements = placement_rows.and_then(|rows| {
-            let mut registered = std::collections::HashSet::new();
-            for (id, row) in rows {
-                if row["registered"].as_bool()? {
-                    registered.insert(id.clone());
-                }
-            }
-            Some(registered)
-        });
-        let animations = v["animations"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .map(|(k, a)| (k.clone(), Animation::parse(a)))
-            .collect();
-        Self {
-            resolved: Default::default(),
-            states,
-            placements,
-            heightmaps,
-            animations,
-            villager_hats: Default::default(),
-            frame_models: Default::default(),
-            cem: Default::default(),
-            random_textures: Default::default(),
-            emissive: Default::default(),
-            blinks: Default::default(),
-            biome_tags: HashMap::new(),
-            pois: Default::default(),
-            species_placements: Default::default(),
-            mod_spawns: Default::default(),
-            vanilla_spawn_placements,
-        }
-    }
-=======
->>>>>>> ed6772e2118
     /// Without the export, approximate path types from the gameplay facts.
     pub fn fallback(facts: &BlockFacts) -> Self {
         let states = facts
@@ -570,40 +413,7 @@ impl MobData {
             .collect();
         Self {
             states,
-<<<<<<< HEAD
-            placements: HashMap::new(),
-            heightmaps: HashMap::new(),
-            animations: HashMap::new(),
-            villager_hats: Default::default(),
-            armor_atlases: Default::default(),
-            frame_models: Default::default(),
-            cem: Default::default(),
-            random_textures: Default::default(),
-            emissive: Default::default(),
-            blinks: Default::default(),
-            biome_tags: HashMap::new(),
-            pois: Default::default(),
-            species_placements: Default::default(),
-            mod_spawns: Default::default(),
-            vanilla_spawn_placements: None,
-||||||| 46c00106def
-            placements: HashMap::new(),
-            heightmaps: HashMap::new(),
-            animations: HashMap::new(),
-            villager_hats: Default::default(),
-            frame_models: Default::default(),
-            cem: Default::default(),
-            random_textures: Default::default(),
-            emissive: Default::default(),
-            blinks: Default::default(),
-            biome_tags: HashMap::new(),
-            pois: Default::default(),
-            species_placements: Default::default(),
-            mod_spawns: Default::default(),
-            vanilla_spawn_placements: None,
-=======
             ..Self::default()
->>>>>>> ed6772e2118
         }
     }
     pub fn state(&self, id: BlockStateId) -> StateData {

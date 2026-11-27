@@ -147,22 +147,17 @@ impl Game<'_> {
     /// Whether a downloaded skin or cape is in the atlas to draw, marking it
     /// drawn; if not (new, or its slot taken), its image is queued for upload
     /// again and it is drawn from the next frame.
-<<<<<<< HEAD
-    pub(in crate::game) fn again_skin(&mut self, location: &str) -> bool {
-        if self.show_skin(location) {
-            return true;
-        }
-        self.skin_downloads.borrow_mut().again(location);
-        false
-    }
     /// Starling: whether a downloaded skin or cape is in the atlas to draw, marking it drawn
     /// (`again_skin` without queueing it again: `own_skin_sprite` stores its own).
-    pub(in crate::game) fn show_skin(&mut self, location: &str) -> bool {
-||||||| 46c00106def
-    pub(super) fn again_skin(&mut self, location: &str) -> bool {
-        let mut downloads = self.skin_downloads.borrow_mut();
-=======
-    pub(super) fn again_skin(&self, location: &str) -> bool {
+    pub(in crate::game) fn show_skin(&self, location: &str) -> bool {
+        let present =
+            self.skin_slots.contains(location) && self.gui.atlas.sprites.contains_key(location);
+        if present {
+            self.skin_downloads.borrow_mut().drawn(location);
+        }
+        present
+    }
+    pub(in crate::game) fn again_skin(&self, location: &str) -> bool {
         self.again_skin_with_journal(location, None)
     }
     fn again_skin_with_journal(
@@ -170,22 +165,8 @@ impl Game<'_> {
         location: &str,
         journal: Option<&sunrise_client::skins::HeadSkinJournal>,
     ) -> bool {
->>>>>>> ed6772e2118
         // A slot without its sprite (the atlas was rebuilt, or the upload
         // never happened) counts as missing, so the skin is stored again.
-<<<<<<< HEAD
-        let shown =
-            self.skin_slots.contains(location) && self.gui.atlas.sprites.contains_key(location);
-        if shown {
-            self.skin_downloads.borrow_mut().drawn(location);
-||||||| 46c00106def
-        if self.skin_slots.contains(location) && self.gui.atlas.sprites.contains_key(location) {
-            downloads.drawn(location);
-            true
-        } else {
-            downloads.again(location);
-            false
-=======
         let present =
             self.skin_slots.contains(location) && self.gui.atlas.sprites.contains_key(location);
         if let Some(journal) = journal {
@@ -201,14 +182,8 @@ impl Game<'_> {
             } else {
                 downloads.again(location);
             }
->>>>>>> ed6772e2118
         }
-<<<<<<< HEAD
-        shown
-||||||| 46c00106def
-=======
         present
->>>>>>> ed6772e2118
     }
     /// Whether `skin` is a downloaded skin not yet in the atlas ([`Self::again_skin`]).
     fn skin_pending_with_journal(
