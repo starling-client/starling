@@ -460,7 +460,7 @@ pub fn prepare_with<'a>(
         // crates' records takes the pinned compiler's cfg for each of them, as `build` does
         // through the SDK's own tool.
         None if check_only => {
-            let atoms = printed_cfg(rust, sdk)?;
+            let atoms = printed_cfg(rust, sdk, target)?;
             index
                 .crates
                 .keys()
@@ -578,7 +578,7 @@ pub fn prepare_with<'a>(
         // flags it is compiled with (the prebuilt game's target is this computer's,
         // `check_identity`), and the features the game was built with.
         let mut cmd = super::apply(rust, tool, &workspace, &mods, &patched);
-        for option in printed_cfg(rust, sdk)? {
+        for option in printed_cfg(rust, sdk, target)? {
             cmd.arg("--cfg").arg(option);
         }
         // The features are the game crate's: the tool decides `feature` predicates only in its
@@ -666,11 +666,17 @@ fn game_cfg(cmd: &mut std::process::Command, sdk: &Identity) {
     }
 }
 
-/// The pinned compiler's `--print cfg` for the SDK's target under the game's features.
-fn printed_cfg(rust: &dyn Toolchain, sdk: &Identity) -> Result<Vec<String>, String> {
+/// The pinned compiler's `--print cfg` for the SDK's target under the game's features. Starling:
+/// `target` in place of the toolchain's, for the Android store's builds planned on a computer for
+/// the phone (`prepare_with`).
+fn printed_cfg(
+    rust: &dyn Toolchain,
+    sdk: &Identity,
+    target: Option<&str>,
+) -> Result<Vec<String>, String> {
     let mut print = super::prebuilt::rustc_with(rust, &[], "2024");
     game_cfg(&mut print, sdk);
-    print.args(["--print", "cfg", "--target", rust.target()]);
+    print.args(["--print", "cfg", "--target", target.unwrap_or(rust.target())]);
     let printed = print.output().map_err(|e| e.to_string())?;
     if !printed.status.success() {
         return Err(String::from_utf8_lossy(&printed.stderr).into_owned());
@@ -727,7 +733,7 @@ mod refusal_tests {
         .unwrap();
         let sdk = crate::prebuilt::identity(dir.path()).unwrap();
         assert!(sdk.lower_crate_cfg().is_none());
-        let printed = super::printed_cfg(&rust, &sdk).unwrap();
+        let printed = super::printed_cfg(&rust, &sdk, None).unwrap();
         assert!(
             printed.contains(&"feature=\"audio\"".to_owned()),
             "{printed:?}"
