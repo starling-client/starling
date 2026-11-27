@@ -2041,6 +2041,7 @@ impl Game<'_> {
         } else if pressed {
             let _ = self.control_key_down(key, key);
         } else {
+            self.control_key_up(key);
             self.keys.remove(&key);
             self.physical_keys.remove(&key);
         }
@@ -2098,7 +2099,7 @@ impl Game<'_> {
 
     /// A key press and release from the touch side (the back key, the close button).
     fn touch_key_tap(&mut self, key: KeyCode) -> Result<()> {
-        self.control_key_down(key, key)?;
+        self.control_key_tap(key);
         self.keys.remove(&key);
         self.physical_keys.remove(&key);
         Ok(())

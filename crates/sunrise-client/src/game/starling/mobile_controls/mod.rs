@@ -721,7 +721,7 @@ impl Game<'_> {
             Output::Enter => self.pad_osk_output(O::Enter),
             Output::Close => self.pad_osk_output(O::Close),
             Output::Key(k) => {
-                let _ = self.control_key_down(k, k);
+                self.control_key_tap(k);
                 self.keys.remove(&k);
                 self.physical_keys.remove(&k);
             }

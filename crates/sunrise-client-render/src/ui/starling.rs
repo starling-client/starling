@@ -119,14 +119,15 @@ impl Caret {
         atlas: &HudAtlas,
         (id, value, max): (crate::clipboard::FieldId, &mut String, usize),
         x: f32,
-    ) {
+    ) -> bool {
         if !self.held || self.last_click.is_none_or(|(_, field)| field != id) {
-            return;
+            return false;
         }
         let mut mask = "*".repeat(value.chars().count());
         self.edit.value.clone_from(&mask);
-        self.drag(atlas, (id, &mut mask, max), x);
+        let dragged = self.drag(atlas, (id, &mut mask, max), x);
         self.edit.value.clone_from(value);
+        dragged
     }
 }
 

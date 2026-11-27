@@ -93,6 +93,11 @@ pub fn list_worlds(saves: &Path) -> Vec<WorldEntry> {
         .flatten()
         .filter_map(|e| {
             let path = e.path();
+            // Starling: Calibrate...'s test world (the benchmark's, marked) is never the
+            // player's, even while it waits to be deleted.
+            if cfg!(target_os = "android") && path.join(crate::benchmark::MARKER).exists() {
+                return None;
+            }
             // findLevelCandidates: a folder with a level.dat or a level.dat_old.
             let file = |name: &str| std::fs::metadata(path.join(name)).ok().filter(|m| m.is_file());
             // getFileModificationTime: level.dat's, else level.dat_old's.

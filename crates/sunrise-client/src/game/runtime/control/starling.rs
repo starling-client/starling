@@ -50,3 +50,21 @@ pub(super) fn account_control(words: &[&str]) -> Result<Option<Value>> {
     };
     Ok(Some(out))
 }
+
+impl Game<'_> {
+    /// A key the phone presses (the back key, the touch controls' keys, the close button), as the
+    /// control socket's `key KEY down` goes: through Sunrise's key path (`socket_key_input`, the
+    /// window's own), so every screen, prompt and editor takes it as a typed key.
+    pub(in crate::game) fn control_key_down(&mut self, key: KeyCode, _raw: KeyCode) -> Result<()> {
+        self.socket_key_input(key, "down");
+        Ok(())
+    }
+    /// The release of a key `control_key_down` pressed: mod key mappings and the game hear it.
+    pub(in crate::game) fn control_key_up(&mut self, key: KeyCode) {
+        self.socket_key_input(key, "up");
+    }
+    /// A press and its release (the back key, the close button, an on-screen keyboard's key).
+    pub(in crate::game) fn control_key_tap(&mut self, key: KeyCode) {
+        self.socket_key_input(key, "tap");
+    }
+}

@@ -60,81 +60,44 @@ impl Game<'_> {
                     }
                     Some(merged)
                 }
-<<<<<<< ours
-                if t.cape.is_none() {
-                    t.cape = own.cape.clone();
-                }
-            } else if own.skin.is_some() || own.cape.is_some() {
-                entries.retain(|(u, _)| *u != local);
-                entries.push((local, own));
-            }
-        }
-        // Starling, Skin Customization's Ely.by Skins: on a server that sends no skin for a player
-        // (offline mode), the one their name has on Ely.by, as offline launchers show it.
-        let mut from_elyby = std::collections::HashSet::new();
-        // An Ely.by account's own skin where the server sent none: Ely.by's, as Mojang's profile
-        // is a Microsoft account's (`own_profile` asks Mojang nothing for it).
-        if !entries.iter().any(|(u, t)| *u == local && t.skin.is_some())
-            && let Some(textures) = self.own_elyby_textures()
-        {
-            entries.retain(|(u, _)| *u != local);
-            entries.push((local, textures));
-            from_elyby.insert(local);
-        }
-        if !online_mode {
-            for (uuid, name) in names {
-                if entries.iter().any(|(u, t)| *u == uuid && t.skin.is_some()) {
-                    continue;
-                }
-                if let Some(textures) = self.elyby_textures(&name) {
-                    entries.retain(|(u, _)| *u != uuid);
-                    entries.push((uuid, textures));
-                    from_elyby.insert(uuid);
-                }
-            }
-        }
-        let mut resolved: Vec<(u128, String)> = Vec::new();
-        // PlayerSkin.model of each resolved skin: the textures' `slim`.
-        let mut slim = std::collections::HashSet::new();
-        // PlayerSkin.cape of each resolved skin.
-        let mut capes: HashMap<u128, String> = HashMap::new();
-        for (uuid, textures) in entries {
-=======
                 None => (own.skin.is_some() || own.cape.is_some()).then(|| own.clone()),
             },
             _ => None,
         };
+        // Starling, Skin Customization's Ely.by Skins: on a server that sends no skin for a player
+        // (offline mode), the one their name has on Ely.by, as offline launchers show it; and an
+        // Ely.by account's own skin where the server sent none. Ely.by's are never signed.
+        let mut elyby: Vec<(u128, skins::Textures)> = Vec::new();
+        let has_skin = |uuid: u128| entries.iter().any(|(u, t)| *u == uuid && t.skin.is_some());
+        if !has_skin(local)
+            && own.as_ref().is_none_or(|t| t.skin.is_none())
+            && let Some(textures) = self.own_elyby_textures()
+        {
+            elyby.push((local, textures));
+        }
+        if !online_mode {
+            for (uuid, name) in &names {
+                if has_skin(*uuid) || elyby.iter().any(|(u, _)| u == uuid) {
+                    continue;
+                }
+                if let Some(textures) = self.elyby_textures(name) {
+                    elyby.push((*uuid, textures));
+                }
+            }
+        }
         let mut skins = HashMap::new();
         {
->>>>>>> theirs
             // PlayerInfo.createSkinLookup: only the local player's own skin
-<<<<<<< ours
             // may be unsigned; Ely.by's never are.
-            let secure = uuid != local && !from_elyby.contains(&uuid);
-            let skin = {
-                let mut downloads = self.skin_downloads.borrow_mut();
-                sunrise_client::skins::lookup(&textures, secure, |kind, url| {
-                    downloads.state(kind, url)
-                })
-            };
-            if let Some(skin) = skin {
-                if textures.slim {
-                    slim.insert(uuid);
-                }
-                if let Some(cape) = sunrise_client::skins::cape(&textures) {
-                    capes.insert(uuid, cape);
-=======
-            // may be unsigned.
             let mut downloads = self.skin_downloads.borrow_mut();
             let mut resolve = |uuid, textures: &skins::Textures| {
                 if let skins::SkinLookup::Ready(skin) =
-                    skins::lookup(textures, uuid != local, |kind, url| {
+                    skins::lookup(textures, uuid != local && !elyby.iter().any(|(u, _)| *u == uuid), |kind, url| {
                         downloads.state(kind, url)
                     })
                     && skin != skins::ResolvedSkin::default()
                 {
                     skins.insert(uuid, skin);
->>>>>>> theirs
                 }
             };
             for (uuid, textures) in entries.iter().filter(|(u, _)| own.is_none() || *u != local) {
@@ -142,6 +105,10 @@ impl Game<'_> {
             }
             if let Some(textures) = &own {
                 resolve(local, textures);
+            }
+            // Last, so a name's Ely.by skin takes the place of a server's entry without one.
+            for (uuid, textures) in &elyby {
+                resolve(*uuid, textures);
             }
         }
         // Starling, Options > Skin Customization: the player's own skin, in this game only (others

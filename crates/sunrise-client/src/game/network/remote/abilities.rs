@@ -55,66 +55,18 @@ impl Remote {
 }
 
 impl Game<'_> {
-<<<<<<< HEAD
-    /// ClientPacketListener.handlePlayerAbilities: the player flies, may fly
-    /// and is invulnerable as the server says (bits 2, 4 and 1). The walking
-    /// speed is read where the field of view needs it
-    /// ([`Game::remote_walking_speed`]), the instabuild bit where the packet
-    /// is handled (`Game::creative`).
-    ///
-    /// Starling: also for a LocalPlayer made after the packet came (it follows Login): without
-    /// one since the last respawn, the game mode's (GameType.updatePlayerAbilities).
-    pub(super) fn apply_remote_abilities(&mut self) {
-        let abilities = self.remote.as_ref().and_then(|r| r.abilities.clone());
-        let spectator = self.spectator();
-        let creative = self.creative;
-        let Some(player) = self.player.as_mut() else {
-||||||| 46c00106def
-    /// ClientPacketListener.handlePlayerAbilities: the player flies, may fly
-    /// and is invulnerable as the server says (bits 2, 4 and 1). The walking
-    /// speed is read where the field of view needs it
-    /// ([`Game::remote_walking_speed`]), the instabuild bit where the packet
-    /// is handled (`Game::creative`).
-    pub(super) fn apply_remote_abilities(&mut self) {
-        let (Some(player), Some(a)) = (
-            self.player.as_mut(),
-            self.remote.as_ref().and_then(|r| r.abilities.as_ref()),
-        ) else {
-=======
     /// Mirror `Remote::abilities` onto the live `PlayerMotion` body.
     pub(in crate::game) fn apply_remote_abilities(&mut self) {
         let (Some(player), Some(a)) = (
             self.player.as_mut(),
             self.remote.as_ref().map(|r| &r.abilities),
         ) else {
->>>>>>> ed6772e2118
             return;
         };
-<<<<<<< HEAD
-        match abilities {
-            Some(a) => {
-                player.invulnerable = a.flags & 1 != 0;
-                player.flying = a.flags & 2 != 0;
-                player.may_fly = a.flags & 4 != 0;
-                player.flying_speed = a.flying_speed;
-            }
-            None => {
-                player.invulnerable = creative || spectator;
-                player.may_fly = creative || spectator;
-                player.flying = spectator;
-            }
-        }
-||||||| 46c00106def
-        player.invulnerable = a.flags & 1 != 0;
-        player.flying = a.flags & 2 != 0;
-        player.may_fly = a.flags & 4 != 0;
-        player.flying_speed = a.flying_speed;
-=======
         player.invulnerable = a.invulnerable;
         player.flying = a.flying;
         player.may_fly = a.may_fly;
         player.flying_speed = a.flying_speed;
->>>>>>> ed6772e2118
     }
 
     /// Sync local and remote player spectator modes from `PlayerInfo` and `MultiPlayerGameMode`.

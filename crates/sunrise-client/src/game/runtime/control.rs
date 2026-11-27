@@ -1505,25 +1505,6 @@ impl Game<'_> {
         Ok(())
     }
 
-<<<<<<< HEAD
-    pub(super) fn control_key_down(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
-        // Over everything, the server pack prompt takes Escape as it takes the keyboard's (the
-        // back key, the touch close button and the control socket come this way, not as window
-        // events).
-        if key == KeyCode::Escape && self.server_packs.prompting() {
-            return self.answer_pack_prompt(false);
-        }
-        self.physical_keys.insert(key);
-        // The window's shortcuts come before any screen, here too.
-        if self.screenshot_shortcut(key, false) {
-            return Ok(());
-||||||| 46c00106def
-    fn control_key_down(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
-        self.physical_keys.insert(key);
-        // The window's shortcuts come before any screen, here too.
-        if self.screenshot_shortcut(key, false) {
-            return Ok(());
-=======
     /// Release modifier, physical-key and debug-key state for the up half of a socket `key … tap`.
     #[inline(always)]
     fn finish_control_tap_release(&mut self, physical: KeyCode) {
@@ -1536,29 +1517,13 @@ impl Game<'_> {
                 .holds_other_source(Source::Agent, physical)
         {
             self.physical_keys.remove(&physical);
->>>>>>> ed6772e2118
         }
-<<<<<<< HEAD
-        // The sign editor takes its keys (Escape and the back key close it, sending the text).
-        if self.sign_edit.is_some() {
-            self.sign_input(Some(key), None);
-            return Ok(());
-        }
-        if self.screen == Screen::Chat {
-            self.chat_key_code(key, None);
-            return Ok(());
-||||||| 46c00106def
-        if self.screen == Screen::Chat {
-            self.chat_key_code(key, None);
-            return Ok(());
-=======
         if tap_menu
             && (self.context_menu_open() || self.context_menu_owns_key(Source::Agent, physical))
         {
             self.debug_key_release_cleanup(physical);
         } else {
             self.debug_key(physical, sunrise_client::debug_keys::KeyAction::Release);
->>>>>>> ed6772e2118
         }
     }
 

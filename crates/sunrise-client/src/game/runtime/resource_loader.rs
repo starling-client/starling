@@ -331,7 +331,7 @@ pub(super) fn run_loading(
     let setup = setup::Setup::default();
     let progress = Progress::new();
     let menu = startup_menu::StartupMenu::new(&options, pack_error.as_deref())?;
-<<<<<<< HEAD
+    let max_atlas_size = Arc::new(AtomicU32::new(sunrise_client::hud::MAX_ATLAS_SIZE));
     let waiting_for_choice = setup.onboarding_visible();
     let (receiver, loader) = if waiting_for_choice {
         // Setup finished on a previous run. Game starts its loader when chosen.
@@ -345,6 +345,7 @@ pub(super) fn run_loading(
             &vanilla_root,
             started,
             &progress,
+            &max_atlas_size,
         )?;
         (receiver, Some(loader))
     };
@@ -358,39 +359,12 @@ pub(super) fn run_loading(
             )
         })
     });
-||||||| 46c00106def
-    let (receiver, loader) = startup_menu::spawn_loader(
-        &options,
-        &settings,
-        menu.pack_selection_revision,
-        mods::LoadRole::startup(options.execution_role),
-        &vanilla_root,
-        started,
-        &progress,
-    )?;
-=======
-    let max_atlas_size = Arc::new(AtomicU32::new(sunrise_client::hud::MAX_ATLAS_SIZE));
-    let (receiver, loader) = startup_menu::spawn_loader(
-        &options,
-        &settings,
-        menu.pack_selection_revision,
-        mods::LoadRole::startup(options.execution_role),
-        &vanilla_root,
-        started,
-        &progress,
-        &max_atlas_size,
-    )?;
->>>>>>> ed6772e2118
     let loading = Loading {
         window: None,
         renderer: None,
-<<<<<<< HEAD
         boot_renderer: None,
         world_renderer: None,
-||||||| 46c00106def
-=======
         max_atlas_size,
->>>>>>> ed6772e2118
         boot: sunrise_client::hud::HudAtlas::boot(),
         gui: None,
         settings,

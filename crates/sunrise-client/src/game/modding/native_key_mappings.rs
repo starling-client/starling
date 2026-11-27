@@ -161,7 +161,7 @@ impl Game<'_> {
     }
     /// The control socket's `key KEY down|up|tap|repeat`, through `key_input` as a window key
     /// goes: a tap is a press, then a release. A script types on a QWERTY layout.
-    pub(super) fn socket_key_input(&mut self, key: KeyCode, action: &str) {
+    pub(in crate::game) fn socket_key_input(&mut self, key: KeyCode, action: &str) {
         let name = sunrise_client::keybinds::key_name(key);
         let layout_key = match key {
             KeyCode::Backquote

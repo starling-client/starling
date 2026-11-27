@@ -219,13 +219,6 @@ impl ChunkGenerator for NoTerrain {
 
 /// A server entity the client tracks (position as last sent).
 pub(super) struct Tracked {
-<<<<<<< HEAD
-    pub(super) kind: String,
-    pub(super) position: [f64; 3],
-||||||| 46c00106def
-    kind: String,
-    position: [f64; 3],
-=======
     pub(in crate::game) kind: String,
     pub(in crate::game) position: [f64; 3],
     pub(in crate::game) previous: [f64; 3],
@@ -233,7 +226,6 @@ pub(super) struct Tracked {
     pub(in crate::game) pitch: f32,
     pub(in crate::game) previous_yaw: f32,
     pub(in crate::game) previous_pitch: f32,
->>>>>>> ed6772e2118
     /// `Entity.getPositionCodec`'s base: the position the server last
     /// reported (AddEntity, MoveEntity, EntityPositionSync), which a move
     /// packet's delta counts from. A TeleportEntity moves the entity but not
@@ -541,21 +533,8 @@ pub(super) struct Remote {
     was_shared_flags: u8,
     was_living_flags: u8,
     last_recorded_pose: Option<crate::pose::Pose>,
-<<<<<<< HEAD
-    /// The last ClientboundPlayerAbilitiesPacket. Vanilla's LocalPlayer
-    /// holds its abilities from the login on; here the player is made at
-    /// the first teleport, which takes them then. Starling: None after a respawn until the server
-    /// sends them: the game mode's then (`GameType.updatePlayerAbilities`).
-    abilities: Option<play::PlayerAbilities>,
-||||||| 46c00106def
-    /// The last ClientboundPlayerAbilitiesPacket. Vanilla's LocalPlayer
-    /// holds its abilities from the login on; here the player is made at
-    /// the first teleport, which takes them then.
-    abilities: Option<play::PlayerAbilities>,
-=======
     /// Live `LocalPlayer.abilities`, mutated in arrival order by `CHANGE_GAME_MODE` and `PlayerAbilities`.
     abilities: sunrise_client::lan::abilities::PlayerAbilities,
->>>>>>> ed6772e2118
     /// The old player's motion, from a Respawn with KEEP_ENTITY_DATA
     /// (`handleRespawn`: `newPlayer.setDeltaMovement(oldPlayer.getDeltaMovement())`),
     /// for the player made at the next teleport: a portal's teleport adds to it.
