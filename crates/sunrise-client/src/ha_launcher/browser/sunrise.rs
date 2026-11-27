@@ -16,8 +16,9 @@ use std::time::{Duration, Instant};
 use sunrise_mod_package::index::{self, Index, Trust};
 
 /// Where the registry publishes its index: Sunrise's (GitHub Pages of sunrise-org/sunrise-mods),
-/// whose `.smod` packages are what this game reads since the move to Sunrise.
-pub const INDEX_URL: &str = "https://sunrise-org.github.io/sunrise-mods/index.json";
+/// whose `.smod` packages are what this game reads since the move to Sunrise. Starling: the signed
+/// v2 index, the only one Sunrise serves since 2026-11-26 (`index::v2_index` checks and keeps it).
+pub const INDEX_URL: &str = index::V2_INDEX_URL;
 /// The registry's pages on the website, `<SITE>/<id>`.
 const SITE: &str = "https://playsunrise.net/mods";
 /// The report form of a project.
@@ -79,6 +80,20 @@ pub fn index() -> Result<Arc<Index>, String> {
             return Ok(index.clone());
         }
     }
+    // Starling: Sunrise's registry is its signed v2 index; a test registry
+    // (`SUNRISE_MOD_INDEX`) is still read as the old index.json.
+    if location() == INDEX_URL {
+        let fetched = fetch_bytes(INDEX_URL);
+        let mut index = index::v2_index(
+            fetched,
+            &crate::ha_launcher::backend::game_home().join("mod-browser"),
+            GAME,
+        )?;
+        merge_horizon(&mut index);
+        let index = Arc::new(index);
+        *LOADED.lock().unwrap() = Some((Instant::now(), index.clone()));
+        return Ok(index);
+    }
     let cache = crate::ha_launcher::backend::game_home().join(CACHE);
     let index = match fetch_index() {
         Ok((index, text)) => {
@@ -120,28 +135,45 @@ fn fetch_index() -> Result<(Index, String), String> {
     } else {
         fs::read_to_string(&at).map_err(|e| format!("{at}: {e}"))?
     };
-    let mut index = match local() {
+    let index = match local() {
         true => Index::parse_local(&text)?,
         false => Index::parse(&text)?,
     };
-    // Starling: Horizon's registry beside Sunrise's, in one list. Its `.hmod` packages are made
-    // Sunrise's as they are installed (sunrise_mod_package::horizon). What it lists is kept in the
-    // game folder too, for when it can't be reached; without either, Sunrise's stand alone.
-    if at == INDEX_URL {
-        let kept = crate::ha_launcher::backend::game_home().join(HORIZON_CACHE);
-        let fetched = horizon_index_text();
-        if let Ok(text) = &fetched {
-            if let Some(dir) = kept.parent() {
-                let _ = fs::create_dir_all(dir);
-            }
-            let _ = fs::write(&kept, text);
-        }
-        let horizon = fetched.or_else(|e| fs::read_to_string(&kept).map_err(|_| e));
-        if let Ok(other) = horizon.and_then(|text| Index::parse(&text)) {
-            index.merge(other);
-        }
-    }
     Ok((index, text))
+}
+
+/// The bytes at `at`, at most [`MAX_INDEX`].
+fn fetch_bytes(at: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let response = download::agent(at).get(at).call().map_err(|e| match e {
+        ureq::Error::Status(code, _) => format!("The mod registry answered {code}."),
+        ureq::Error::Transport(t) => format!("The mod registry can't be reached: {t}"),
+    })?;
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_INDEX)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    Ok(bytes)
+}
+
+/// Starling: Horizon's registry beside Sunrise's, in one list. Its `.hmod` packages are made
+/// Sunrise's as they are installed (sunrise_mod_package::horizon). What it lists is kept in the
+/// game folder too, for when it can't be reached; without either, Sunrise's stand alone.
+fn merge_horizon(index: &mut Index) {
+    let kept = crate::ha_launcher::backend::game_home().join(HORIZON_CACHE);
+    let fetched = horizon_index_text();
+    if let Ok(text) = &fetched {
+        if let Some(dir) = kept.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        let _ = fs::write(&kept, text);
+    }
+    let horizon = fetched.or_else(|e| fs::read_to_string(&kept).map_err(|_| e));
+    if let Ok(other) = horizon.and_then(|text| Index::parse(&text)) {
+        index.merge(other);
+    }
 }
 
 /// Horizon's registry's index (GitHub Pages of horizon-rust/horizon-mods).
@@ -294,7 +326,13 @@ pub fn trust_and_capabilities(id: &str) -> Vec<String> {
             p.authors.join(", ")
         )
     }];
+    // Starling: a project of Sunrise's v2 index, whose signature covers each file's checksum.
+    let from_v2 = p.versions.first().is_some_and(|v| v.api == index::V2_API);
     lines.push(match &p.key {
+        _ if from_v2 => {
+            "Listed in the registry's signed index: the launcher checks its checksum against it"
+                .to_owned()
+        }
         Some(_) => "Signed by its author: the launcher checks the signature".to_owned(),
         None => "Unsigned: the launcher checks its checksum only".to_owned(),
     });
@@ -302,7 +340,7 @@ pub fn trust_and_capabilities(id: &str) -> Vec<String> {
         lines.push(
             "Native code: it is compiled into the game and runs with full access to your computer. Its source was reviewed before it was listed".into(),
         );
-        if let Some(v) = p.versions.first() {
+        if let Some(v) = p.versions.first().filter(|v| v.api != index::V2_API) {
             let pin = v.api.split('/').nth(1).unwrap_or_default();
             lines.push(format!(
                 "Built by the launcher on Sunrise {}",
@@ -310,7 +348,12 @@ pub fn trust_and_capabilities(id: &str) -> Vec<String> {
             ));
         }
     }
-    if let Some(v) = p.versions.first().filter(|_| p.kind == index::Kind::Mod) {
+    // v2 lists no capabilities: the game says them as it loads the mod.
+    if let Some(v) = p
+        .versions
+        .first()
+        .filter(|v| p.kind == index::Kind::Mod && v.api != index::V2_API)
+    {
         lines.extend(
             v.capabilities
                 .known()
@@ -696,7 +739,7 @@ fn install_version(
     let file = &version_of(index, p, v, None).files[0];
     let staging = home.join("mod-browser/downloads");
     let path = fetch(file, &staging, local, &|f| progress(&line, f))?;
-    let checked = index::check_file(index, p, v, &path).and_then(|trust| {
+    let checked = index::check_listed_file(index, p, v, &path).and_then(|trust| {
         // Only Rust and TOML sources, for the mod the index names: nothing in it runs here.
         match native {
             true => index::native::Bundle::read(&path).and_then(|b| match b.manifest.id == p.id {
@@ -812,12 +855,22 @@ pub fn before_play(home: &Path) {
     if !from_registry {
         return;
     }
-    let kept = fs::read_to_string(crate::ha_launcher::backend::game_home().join(CACHE)).ok();
-    let parse = |t: String| match local() {
-        true => Index::parse_local(&t).ok(),
-        false => Index::parse(&t).ok(),
+    let kept = match location() == INDEX_URL {
+        // Starling: the signed v2 index kept last time, checked again; no fetch.
+        true => index::v2_index(
+            Err(String::new()),
+            &crate::ha_launcher::backend::game_home().join("mod-browser"),
+            GAME,
+        )
+        .ok(),
+        false => fs::read_to_string(crate::ha_launcher::backend::game_home().join(CACHE))
+            .ok()
+            .and_then(|t| match local() {
+                true => Index::parse_local(&t).ok(),
+                false => Index::parse(&t).ok(),
+            }),
     };
-    if let Some(index) = kept.and_then(parse) {
+    if let Some(index) = kept {
         for line in turn_off_revoked(&index, home) {
             eprintln!("{line}");
         }
