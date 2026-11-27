@@ -85,6 +85,7 @@ fn picture(gpu: &Gpu, properties: &str) -> Vec<[u8; 4]> {
             material_maps: None,
             lightmap: color.clone(),
             terrain: Some(Geometry {
+                prepass: None,
                 buffers: &layouts,
                 table: None,
                 depth_write: true,

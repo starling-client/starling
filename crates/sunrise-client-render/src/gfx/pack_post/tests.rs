@@ -106,6 +106,8 @@ fn a_custom_texture_over_a_buffer_ends_when_its_stage_flips_it() {
         image: pack_textures::Image::Atlas,
     }];
     let interface = sunrise_shaders::Interface {
+        alpha_cut: None,
+        prepass_uv: None,
         uniform_size: 48,
         initial_values: vec![0; 48],
         uniforms: Vec::new(),
@@ -202,6 +204,8 @@ fn a_png_under_a_name_of_its_own_is_not_bound() {
     ];
     let names = ["tp", "tr", "gaux2", "noisetex", "cp"];
     let interface = sunrise_shaders::Interface {
+        alpha_cut: None,
+        prepass_uv: None,
         uniform_size: 48,
         uniforms: Vec::new(),
         samplers: names
@@ -293,6 +297,8 @@ fn an_image_without_an_entry_reads_zero() {
         before: None,
     };
     let interface = sunrise_shaders::Interface {
+        alpha_cut: None,
+        prepass_uv: None,
         uniform_size: 48,
         initial_values: vec![0; 48],
         uniforms: Vec::new(),

@@ -483,6 +483,7 @@ fn atomics_reach_an_r32ui_shadowcolor_buffer() {
 fn terrain_pack(program: &str, fragment: &str) -> Post {
     let inputs = sunrise_shaders::GameInputs {
         terrain: Some(sunrise_shaders::GbuffersInputs {
+            prepass_uv: false,
             parts: None,
             item_id_declared: false,
             far_depth: false,
@@ -526,6 +527,7 @@ fn build_terrain(gpu: &Fixture, post: Post) -> PackPost {
     gpu.build_with_terrain(
         post,
         Some(Geometry {
+            prepass: None,
             material_maps: false,
             buffers: &layouts,
             table: None,
@@ -710,6 +712,8 @@ fn bind_images(
 ) -> Option<(Option<Vec<(u32, Image)>>, Vec<String>)> {
     let (adapter, device, _queue) = crate::gfx::test_gpu::optional_device()?;
     let interface = sunrise_shaders::Interface {
+        alpha_cut: None,
+        prepass_uv: None,
         uniform_size: 48,
         initial_values: vec![0; 48],
         uniforms: Vec::new(),

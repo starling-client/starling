@@ -419,6 +419,7 @@ fn run_daily(test: &str, fixture: Fixture) {
 fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
     let eye = glam::DVec3::new(0.5, 100.0, 0.5);
     Frame {
+        menu_blur_cache: false,
         weather: &[],
         weather_time: client::weather::Time::new(0, 0.0),
         camera: eye,

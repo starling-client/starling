@@ -10,6 +10,7 @@ use crate::hud::HudBatch;
 /// it builds a client `Frame` from a `HudBatch`, which that crate does not have.
 pub(in crate::gfx) fn frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
+        menu_blur_cache: false,
         eye: glam::DVec3::ZERO,
         eye_rotation: [0.0; 2],
         first_person: true,

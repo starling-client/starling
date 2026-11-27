@@ -435,6 +435,7 @@ pub(crate) fn run_daily() {
 
 fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
+        menu_blur_cache: false,
         weather: &[],
         weather_time: client::weather::Time::new(0, 0.0),
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
