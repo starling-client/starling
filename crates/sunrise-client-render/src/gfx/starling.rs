@@ -63,7 +63,7 @@ pub(super) fn light_frustum(cull: Mat4, clamped: bool) -> Frustum {
     if clamped {
         planes[4] = Vec4::W;
     }
-    Frustum { planes }
+    Frustum::from_planes(planes)
 }
 
 impl Renderer {
