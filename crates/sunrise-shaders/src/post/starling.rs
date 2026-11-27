@@ -50,7 +50,10 @@ pub(super) fn contained<T>(
         Err(vec![crate::Error {
             file: file.to_owned(),
             line: 0,
+            column: 0,
+            stage: None,
             message: format!("internal error (translator panicked): {text}"),
+            unprovided: None,
         }])
     })
 }
