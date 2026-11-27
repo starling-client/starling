@@ -2,15 +2,11 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{ffi::CStr, path::Path};
-<<<<<<< HEAD
 #[path = "native_libraries/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
-||||||| 46c00106def
-=======
 use sunrise_mod_package::library_identity::LibraryIdentity;
->>>>>>> ed6772e2118
 
 /// Commit used for the pinned SDK ABI; `dev` for a build that names none.
 pub const GAME_BUILD_ID: &str = env!("SUNRISE_GAME_BUILD_ID");

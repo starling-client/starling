@@ -1061,12 +1061,6 @@ impl PackAtlas {
             scale[0], scale[1],
         );
         let mut body = body;
-<<<<<<< ours
-        // Developers' aid: `SUNRISE_SHADER_PACK_NO_FACE=1` leaves the faces' normal and tangent
-        // out (wrong lighting), to time what working them out per vertex costs.
-        if flat && std::env::var_os("SUNRISE_SHADER_PACK_NO_FACE").is_none() {
-            body.insert_str(0, PULL_FLAT);
-=======
         if draws == TerrainDraws::Pages {
             body.insert_str(0, PULL_CORNERS);
             body.push_str(FACE);
@@ -1077,7 +1071,6 @@ impl PackAtlas {
         }
         if flat {
             body.insert_str(0, &format!("{PULL_CORNERS}{PULL_FLAT}"));
->>>>>>> theirs
             body.push_str(FACE);
             body.push_str(MID);
             body.push_str(SOURCE);

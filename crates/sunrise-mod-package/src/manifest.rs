@@ -1273,90 +1273,11 @@ impl Package {
         package.check_runtime_layout(&runtime)?;
         if package.is_native() {
             let mut resource_bytes = 0u64;
-<<<<<<< HEAD
-            for (name, size, directory) in entries {
-                let path = if directory {
-                    name.trim_end_matches('/')
-                } else {
-                    &name
-                };
-                if !plain_path(path) || !names.insert(name.clone()) {
-                    return Err(format!("invalid or duplicate package path: {name}"));
-                }
-                if !directory {
-                    // Starling: a package adopted from Horizon's registry keeps the SHA-256 of the file it
-                    // came from (`horizon::ORIGIN`), which names its library in the mod store.
-                    if name != MANIFEST
-                        && name != USES_FILE
-                        && name != "icon.png"
-                        && name != crate::horizon::ORIGIN
-                        && !name.starts_with("runtime/")
-                        && !name.starts_with("assets/")
-                        && !name.starts_with("data/")
-                        && !source_file(&name)
-                    {
-                        return Err(format!("unexpected package path: {name}"));
-                    }
-                    if source_file(&name) {
-                        source_count += 1;
-                        source_bytes = source_bytes
-                            .checked_add(size)
-                            .ok_or("native package too large")?;
-                    } else if name.starts_with("assets/") || name.starts_with("data/") {
-                        crate::content::check_path(&name)?;
-                        crate::content::check_namespace(&name, &package.manifest)?;
-                        if size > crate::content::MAX_FILE {
-                            return Err(format!("{name} exceeds the content file size limit"));
-                        }
-                        resource_count += 1;
-                        resource_bytes = resource_bytes
-                            .checked_add(size)
-                            .ok_or("content too large")?;
-                    }
-||||||| 46c00106def
-            for (name, size, directory) in entries {
-                let path = if directory {
-                    name.trim_end_matches('/')
-                } else {
-                    &name
-                };
-                if !plain_path(path) || !names.insert(name.clone()) {
-                    return Err(format!("invalid or duplicate package path: {name}"));
-                }
-                if !directory {
-                    if name != MANIFEST
-                        && name != USES_FILE
-                        && name != "icon.png"
-                        && !name.starts_with("runtime/")
-                        && !name.starts_with("assets/")
-                        && !name.starts_with("data/")
-                        && !source_file(&name)
-                    {
-                        return Err(format!("unexpected package path: {name}"));
-                    }
-                    if source_file(&name) {
-                        source_count += 1;
-                        source_bytes = source_bytes
-                            .checked_add(size)
-                            .ok_or("native package too large")?;
-                    } else if name.starts_with("assets/") || name.starts_with("data/") {
-                        crate::content::check_path(&name)?;
-                        crate::content::check_namespace(&name, &package.manifest)?;
-                        if size > crate::content::MAX_FILE {
-                            return Err(format!("{name} exceeds the content file size limit"));
-                        }
-                        resource_count += 1;
-                        resource_bytes = resource_bytes
-                            .checked_add(size)
-                            .ok_or("content too large")?;
-                    }
-=======
             for (name, size) in &resources {
                 crate::content::check_path(name)?;
                 crate::content::check_namespace(name, &package.manifest)?;
                 if *size > crate::content::MAX_FILE {
                     return Err(format!("{name} exceeds the content file size limit").into());
->>>>>>> ed6772e2118
                 }
                 resource_bytes = resource_bytes
                     .checked_add(*size)

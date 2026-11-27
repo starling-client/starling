@@ -69,29 +69,13 @@ Usage: sunrise-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
   --launch-api          Print what this preparer supports as JSON (the Launch API's version, the
                         pinned Minecraft and Java, the resources' layout, the options) and exit 0
 
-<<<<<<< HEAD
-Needs Minecraft played once from the official launcher, and Java of the version
-research-lock.json pins. Releases use a runtime; development or changed exporters need a JDK.
-compile-exporters builds and validates a release bundle from the imported pinned jars;
---prepare first imports the explicit game files, as for resource preparation.
-The resources go to <root>/.local/sunrise-client/<version>, or --output; pass that to
-sunrise-client --resources. Exit codes: 0 done, 1 failed (or --check found gaps), 2 a refused
-command line (docs/api/launch.md).
-||||||| 46c00106def
-Needs Minecraft played once from the official launcher, and Java of the version
-research-lock.json pins. Releases use a runtime; development or changed exporters need a JDK.
-compile-exporters builds and validates a release bundle from the already imported pinned jars.
-The resources go to <root>/.local/sunrise-client/<version>, or --output; pass that to
-sunrise-client --resources. Exit codes: 0 done, 1 failed (or --check found gaps), 2 a refused
-command line (docs/api/launch.md).
-=======
 Full preparation needs the player's installed Minecraft client files. The separate --server
 profile needs only the pinned server.jar, downloaded from Mojang or supplied with --server-jar.
 Releases can use the pinned Java runtime; development or changed exporters need a JDK.
-compile-exporters builds and validates a release bundle from the already imported pinned jars.
+compile-exporters builds and validates a release bundle from the imported pinned jars;
+--prepare first imports the explicit game files, as for resource preparation.
 Pass the corresponding output folder to sunrise-client --resources. Exit codes: 0 done,
 1 failed (or --check found gaps), 2 a refused command line (docs/api/launch.md).
->>>>>>> ed6772e2118
 
 sunrise-prepare panorama repairs the classic menu background in existing resources without Java.
 sunrise-prepare fonts adds the GNU Unifont glyphs (characters the bitmap fonts lack) the same way.
@@ -186,17 +170,11 @@ fn main() -> ExitCode {
             }
         };
         let parsed = match flag.as_str() {
-<<<<<<< HEAD
-            "--prepare" | "--server-jar" | "--check"
+            "--prepare" | "--server" | "--server-jar" | "--check"
                 if assets
                     .as_deref()
                     .is_some_and(|kind| kind != "compile-exporters" || flag == "--check") =>
             {
-||||||| 46c00106def
-            "--prepare" | "--server-jar" | "--check" if assets.is_some() => {
-=======
-            "--prepare" | "--server" | "--server-jar" | "--check" if assets.is_some() => {
->>>>>>> ed6772e2118
                 Err(format!("{flag} is for preparing, not for asset copying"))
             }
             "--progress" | "--launch-api" if query.is_some() => {

@@ -973,8 +973,6 @@ impl FrameUniforms {
             ),
             None => (frame.sky.fog_color, frame.distance * 0.9, frame.distance),
         };
-<<<<<<< HEAD
-        let light = shadow_light(frame, &self.shadow);
         let (shadow_projection, shadow_projection_inverse, shadow_view, shadow_view_inverse) =
             match self.shadow_drawn.filter(|_| self.keep_shadow) {
                 Some((drawn, view, projection)) => {
@@ -982,32 +980,12 @@ impl FrameUniforms {
                     (projection, projection.inverse(), view, view.inverse())
                 }
                 None => {
-                    let (projection, projection_inverse) = match self.shadow.fov {
-                        Some(_) => {
-                            let (_, projection) = shadow_camera(light, frame.camera, &self.shadow);
-                            (projection, projection.inverse())
-                        }
-                        None => shadow_ortho(&self.shadow),
-                    };
+                    let (projection, projection_inverse) = shadow_projection(frame, &self.shadow);
                     let (view, view_inverse) = shadow_model_view(frame, &self.shadow);
                     self.shadow_drawn = Some((frame.camera, view, projection));
                     (projection, projection_inverse, view, view_inverse)
                 }
             };
-||||||| 46c00106def
-        let light = shadow_light(frame, &self.shadow);
-        let (shadow_projection, shadow_projection_inverse) = match self.shadow.fov {
-            Some(_) => {
-                let (_, projection) = shadow_camera(light, frame.camera, &self.shadow);
-                (projection, projection.inverse())
-            }
-            None => shadow_ortho(&self.shadow),
-        };
-        let (shadow_view, shadow_view_inverse) = shadow_model_view(frame, &self.shadow);
-=======
-        let (shadow_projection, shadow_projection_inverse) = shadow_projection(frame, &self.shadow);
-        let (shadow_view, shadow_view_inverse) = shadow_model_view(frame, &self.shadow);
->>>>>>> ed6772e2118
         let day_time = inputs.day_time.rem_euclid(24000) as i32;
         let world_day = inputs.day_time.div_euclid(24000);
         let (seconds, frame_time, frame_counter) = match (inputs.frame_timing, inputs.still_ticks) {

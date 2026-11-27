@@ -577,27 +577,6 @@ pub fn prepare_with<'a>(
         // The tool plans against what the patch library compiles: this computer's cfg set under the
         // flags it is compiled with (the prebuilt game's target is this computer's,
         // `check_identity`), and the features the game was built with.
-<<<<<<< HEAD
-        let mut print = super::prebuilt::rustc_with(rust, &[], "2024");
-        game_cfg(&mut print, sdk);
-        if let Some(target) = target {
-            print.args(["--target", target]);
-        }
-        print.args(["--print", "cfg"]);
-        let printed = print.output().map_err(|e| e.to_string())?;
-        if !printed.status.success() {
-            return Err(String::from_utf8_lossy(&printed.stderr).into_owned());
-        }
-||||||| 46c00106def
-        let mut print = super::prebuilt::rustc_with(rust, &[], "2024");
-        game_cfg(&mut print, sdk);
-        print.args(["--print", "cfg"]);
-        let printed = print.output().map_err(|e| e.to_string())?;
-        if !printed.status.success() {
-            return Err(String::from_utf8_lossy(&printed.stderr).into_owned());
-        }
-=======
->>>>>>> ed6772e2118
         let mut cmd = super::apply(rust, tool, &workspace, &mods, &patched);
         for option in printed_cfg(rust, sdk)? {
             cmd.arg("--cfg").arg(option);

@@ -618,10 +618,8 @@ pub struct Post {
 }
 
 fn located_errors(errors: &[crate::Error]) -> Vec<String> {
-    errors
-        .iter()
-        .map(|e| format!("{}:{}: {}", e.file, e.line, e.message))
-        .collect()
+    // `file:line: message`, as Sunrise's errors display.
+    errors.iter().map(ToString::to_string).collect()
 }
 
 impl Post {
@@ -1633,25 +1631,11 @@ impl Loader<'_> {
         let program = match contained(&fsh, || translate(&vertex, &fragment)) {
             Ok(p) => p,
             Err(errors) => {
-<<<<<<< ours
                 skip(self.post, &name, located_errors(&errors));
-=======
-                notes.extend(errors.iter().map(ToString::to_string));
-                notes.push(format!("{name}: skipped"));
->>>>>>> theirs
                 return None;
             }
         };
-<<<<<<< ours
-        self.post.notes.extend(
-            program
-                .notes
-                .iter()
-                .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
-        );
-=======
-        notes.extend(program.notes.iter().map(ToString::to_string));
->>>>>>> theirs
+        self.post.notes.extend(program.notes.iter().map(ToString::to_string));
         self.post.config.read_vertex(&vertex);
         self.post.config.read(&fragment);
         let mut buffers =
@@ -1791,11 +1775,10 @@ impl Loader<'_> {
             return None;
         }
         // Conditions read as false, as the other programs' (`load`).
-        notes.extend(stages.iter().flat_map(warnings));
+        self.post.notes.extend(stages.iter().flat_map(warnings));
         let [vertex, geometry, fragment] = &stages;
-<<<<<<< ours
         let translated = contained(fsh, || {
-            crate::translate_geometry(vertex, geometry, fragment, inputs)
+            crate::translate_geometry(vertex, geometry, fragment, inputs, self.limits)
         });
         let (program, triangles) = match translated {
             Ok(p) => p,
@@ -1804,24 +1787,7 @@ impl Loader<'_> {
                 return None;
             }
         };
-        self.post.notes.extend(
-            program
-                .notes
-                .iter()
-                .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
-        );
-=======
-        let (program, triangles) =
-            match crate::translate_geometry(vertex, geometry, fragment, inputs, self.limits) {
-                Ok(p) => p,
-                Err(errors) => {
-                    notes.extend(errors.iter().map(ToString::to_string));
-                    notes.push(format!("{name}: skipped"));
-                    return None;
-                }
-            };
-        notes.extend(program.notes.iter().map(ToString::to_string));
->>>>>>> theirs
+        self.post.notes.extend(program.notes.iter().map(ToString::to_string));
         self.post.config.read_vertex(vertex);
         self.post.config.read(fragment);
         let mut buffers =
@@ -1887,29 +1853,13 @@ impl Loader<'_> {
                 continue;
             }
             // Conditions read as false, as the other programs' (`load`).
-            notes.extend(warnings(&pp));
+            self.post.notes.extend(warnings(&pp));
             match contained(&path, || translate_compute(&pp)) {
                 Ok(program) => {
-<<<<<<< ours
-                    self.post.notes.extend(
-                        program
-                            .notes
-                            .iter()
-                            .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
-                    );
-=======
-                    notes.extend(program.notes.iter().map(ToString::to_string));
->>>>>>> theirs
+                    self.post.notes.extend(program.notes.iter().map(ToString::to_string));
                     out.push((name, program));
                 }
-<<<<<<< ours
                 Err(errors) => skip(self.post, &name, located_errors(&errors)),
-=======
-                Err(errors) => {
-                    notes.extend(errors.iter().map(ToString::to_string));
-                    notes.push(format!("{name}: skipped"));
-                }
->>>>>>> theirs
             }
         }
         out

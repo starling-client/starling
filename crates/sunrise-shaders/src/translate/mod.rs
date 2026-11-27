@@ -1033,21 +1033,9 @@ fn resources(
 
 /// Translates a compute program (`.csh`).
 pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<Error>> {
-<<<<<<< HEAD
-    let named = anonymous_structs::name(&compute.code);
-    let named = shadowed_types::rename(named.as_deref().unwrap_or(&compute.code)).or(named);
-    let named = named.map(|code| Preprocessed {
-        code,
-        ..compute.clone()
-    });
-||||||| 46c00106def
-    let named = anonymous_structs::name(&compute.code).map(|code| Preprocessed {
-        code,
-        ..compute.clone()
-    });
-=======
-    let named = anonymous_structs::name(compute.code()).map(|code| compute.with_code(code));
->>>>>>> ed6772e2118
+    let named = anonymous_structs::name(compute.code());
+    let named = shadowed_types::rename(named.as_deref().unwrap_or(compute.code())).or(named);
+    let named = named.map(|code| compute.with_code(code));
     let compute = named.as_ref().unwrap_or(compute);
     let split = atomic_vectors::rewrite(compute);
     let compute = split.as_ref().unwrap_or(compute);

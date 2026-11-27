@@ -568,30 +568,8 @@ fn read_value(kind: i32, r: &mut Reader) -> Result<Value> {
         BOOLEAN => Value::Bool(r.bool()?),
         ROTATIONS | VECTOR3 => Value::Floats(vec![r.f32()?, r.f32()?, r.f32()?]),
         QUATERNION => Value::Floats(vec![r.f32()?, r.f32()?, r.f32()?, r.f32()?]),
-<<<<<<< HEAD
-        BLOCK_POS => Value::Pos(crate::buf::Pos::read(r)?),
-        OPTIONAL_BLOCK_POS => Value::OptPos(if r.bool()? {
-            Some(crate::buf::Pos::read(r)?)
-        } else {
-            None
-        }),
-        // GlobalPos.STREAM_CODEC: the dimension ResourceKey, then a BlockPos.
-        OPTIONAL_GLOBAL_POS => Value::OptGlobalPos(if r.bool()? {
-            Some((r.string(32767)?, crate::buf::Pos::read(r)?))
-        } else {
-            None
-        }),
-||||||| 46c00106def
-        BLOCK_POS => Value::Pos(crate::buf::Pos::read(r)?),
-        OPTIONAL_BLOCK_POS => Value::OptPos(if r.bool()? {
-            Some(crate::buf::Pos::read(r)?)
-        } else {
-            None
-        }),
-=======
         BLOCK_POS => Value::Pos(Pos::read(r)?),
         OPTIONAL_BLOCK_POS => Value::OptPos(if r.bool()? { Some(Pos::read(r)?) } else { None }),
->>>>>>> ed6772e2118
         OPTIONAL_LIVING_ENTITY_REFERENCE => {
             Value::OptUuid(if r.bool()? { Some(r.uuid()?) } else { None })
         }
