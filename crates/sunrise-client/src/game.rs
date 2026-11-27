@@ -4483,6 +4483,10 @@ struct Game<'a> {
     tick_script: tick_script::TickScript,
     /// The overworld's last `sky_darken` and its inputs (time, rain, thunder).
     sky_darken_memo: std::cell::Cell<Option<((Dim, i64, u32, u32), i32)>>,
+    /// The last water plane `water_plane` found, kept while none is in reach.
+    water_plane_memo: std::cell::Cell<Option<f32>>,
+    /// The camera's block and the second `water_plane` last scanned at.
+    water_plane_scan: std::cell::Cell<Option<([i32; 3], i64)>>,
     /// What the boats' and minecarts' ticks know about the mobs: their box reach
     /// (`vehicle_mob_reach`) and a grid of their boxes (`mobs_meeting`).
     vehicle_mobs: boat_passengers::VehicleMobs,
@@ -9011,12 +9015,11 @@ impl Game<'_> {
         self.see_through_vertices = see_through;
         laps.lap("eg_name_tags");
         // Entity shadows (EntityRenderer.extractShadow), unless the Entity Shadows option is off; a
-        // shader pack's sun shadows replace them.
+        // shader pack's sun shadows replace them, or a native pack's.
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
-        let pack_shadows = self
-            .renderer
-            .as_ref()
-            .is_some_and(|r| r.pack_entity_shadows());
+        let pack_shadows = self.renderer.as_ref().is_some_and(|r| {
+            r.pack_entity_shadows() || (self.overworld_skybox() && r.native_shadow())
+        });
         let shadows = self.settings.entity_shadows && self.pack.polytone_colors.entity_shadows();
         let shadow_sprite = (shadows && !pack_shadows)
             .then(|| self.gui.atlas.sprites.get("misc/shadow").copied())
@@ -11986,7 +11989,7 @@ impl Game<'_> {
         let on_top = g.on_top;
         pr.lap("pr_debug");
         let visuals = if self.title.is_none() {
-            self.native_frame_visuals(&mut lines)
+            self.native_frame_visuals(alpha, &mut lines)
         } else {
             native_visuals::FrameVisuals::default()
         };
@@ -12400,7 +12403,7 @@ impl Game<'_> {
         // After the mods' world geometry, whose labels add see-through copies.
         let see_through = std::mem::take(&mut self.see_through_vertices);
         let colored_lights = if self.title.is_none() {
-            visuals.finish(camera)
+            visuals.finish(self, camera)
         } else {
             Vec::new()
         };
@@ -12445,6 +12448,17 @@ impl Game<'_> {
             shadow_distance: Some(effective_detail_distance),
             depth_far,
             underwater,
+            water_plane: if title
+                || underwater
+                || !self
+                    .renderer
+                    .as_ref()
+                    .is_some_and(|r| r.wants_water_plane())
+            {
+                None
+            } else {
+                self.water_plane(camera)
+            },
             title,
             sky_pass: !title
                 && sunrise_client::fog::sky_pass_present(camera_fog, sky_effect_blocked, skybox),
@@ -15338,6 +15352,8 @@ impl<'a> Game<'a> {
             native_mod_screen: None,
             native_mod_screen_parent: false,
             sky_darken_memo: Default::default(),
+            water_plane_memo: Default::default(),
+            water_plane_scan: Default::default(),
             vehicle_mobs: Default::default(),
             persist: Default::default(),
             missing_professions: Default::default(),

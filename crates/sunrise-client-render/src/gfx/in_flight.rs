@@ -102,7 +102,7 @@ impl Renderer {
         if let Some(timer) = &mut self.gpu_timer {
             timer.submitted(&self.queue);
         }
-        if let Some(Some(timer)) = Self::pass_timer(&mut self.pack_post) {
+        if let Some(Some(timer)) = Self::pass_timer(&mut self.pack_post, &mut self.native) {
             timer.submitted(&self.queue);
         }
         if let Some(timer) = &mut self.own_timing {

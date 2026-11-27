@@ -38,6 +38,7 @@ sunrise-protocol = { path = "../sunrise-protocol" }
 sunrise-render-core = { path = "../sunrise-render-core" }
 sunrise-render-shaderpack = { path = "../sunrise-render-shaderpack" }
 sunrise-mod-pipeline = { path = "../sunrise-mod-pipeline" }
+sunrise-shader-api = { path = "../sunrise-shader-api" }
 sunrise-glsl = { path = "../sunrise-glsl" }
 sunrise-shaders = { path = "../sunrise-shaders" }
 sunrise-system = { path = "../sunrise-system" }

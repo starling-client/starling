@@ -191,6 +191,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
                 expected,
                 "{name}, dimension {dimension}: {notes:?}"
             );
+            assert!(!renderer.native_shadow());
             println!("{name}, dimension {dimension}: replaces_mob_blob={expected}");
         }
     }

@@ -8,6 +8,7 @@ pub(in crate::gfx) struct PostPassArgs<'a> {
     pub(in crate::gfx) surface_frame: Option<&'a wgpu::SurfaceTexture>,
     pub(in crate::gfx) fg_frames: Option<&'a (wgpu::Texture, wgpu::Texture)>,
     pub(in crate::gfx) pack_post: bool,
+    pub(in crate::gfx) native_post: bool,
     pub(in crate::gfx) after_pack_sky: bool,
     pub(in crate::gfx) after_pack_features: bool,
     pub(in crate::gfx) after_pack_custom_geometry: bool,
@@ -73,6 +74,7 @@ impl Renderer {
             surface_frame,
             fg_frames,
             pack_post,
+            native_post,
             after_pack_sky,
             after_pack_features,
             after_pack_custom_geometry,
@@ -416,6 +418,22 @@ impl Renderer {
                     .finish_pack(&mut encoder, &view_target, self.own_timing.as_mut());
             }
             ran?;
+        } else if let Some((color, depth)) = &scaled
+            && native_post
+            && let Some(native) = &mut self.native
+            && let Some(post) = &mut native.post
+        {
+            let size = self.world_post.size().unwrap_or([1, 1]);
+            let history_reset = native.frame.take_history_reset();
+            post.run(
+                &self.device,
+                &mut encoder,
+                (color, depth, &native.frame.surface_view),
+                &view_target,
+                size,
+                history_reset,
+                native.timing.as_mut(),
+            );
         } else if let (Some((_, generated)), Some((_, depth))) = (fg_frames, &scaled) {
             let camera = frame_gen::Camera {
                 jittered,

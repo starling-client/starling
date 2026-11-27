@@ -777,6 +777,14 @@ impl Loading {
                     self.menu.clipboard.set(&text);
                 }
                 Event::ListShaderPacks => {
+                    let (key, _) = sunrise_client::shader_pack_list::resolve(
+                        &Game::shader_packs_dir(),
+                        &self.settings.sunrise.shader_pack,
+                    );
+                    if key != self.settings.sunrise.shader_pack {
+                        self.settings.sunrise.shader_pack = key;
+                        self.save_menu_settings();
+                    }
                     self.settings.shader_packs =
                         sunrise_client::shader_pack_list::scan(&Game::shader_packs_dir());
                 }
@@ -812,6 +820,11 @@ impl Loading {
                 Event::ShaderOptions => {
                     if let Some(options) = self.settings.shader_options.take() {
                         super::shader_packs::write_shader_options(&options);
+                    }
+                }
+                Event::NativePackOptions(i) => {
+                    if let Some(pack) = self.settings.shader_packs.get(i) {
+                        pack.save_values(&Game::shader_packs_dir());
                     }
                 }
                 Event::OpenShaderPackFolder => {

@@ -7,7 +7,7 @@ pub mod random;
 pub mod stars;
 pub mod terrain;
 
-pub use frustum::{Cull, Frustum, JoinedFrusta, MAX_WORLD_VIEWS};
+pub use frustum::{Cull, Frusta, Frustum, JoinedFrusta, MAX_WORLD_VIEWS};
 pub use terrain::{
     BRIGHT, CHUNK_VISIBILITY_THRESHOLD, EntitySpan, FLAT_NORMAL, INCANDESCENT, LOW, NO_SPECULAR,
     OPAQUE_LAYER, SectionKey, TerrainSource, TerrainVertex, UV_STEPS, VERY_BRIGHT, Vertex, WHOLE,

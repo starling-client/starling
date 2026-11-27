@@ -755,6 +755,11 @@ impl Game<'_> {
             if has_renderer {
                 game.apply_ui_settings();
             }
+            // Sunrise's own shader pack is built again: its sprite tags name the old atlas's
+            // layers, and a new renderer runs no pack.
+            game.native_shaders = super::native_shaders::NativeShaders::picking(&std::mem::take(
+                &mut game.native_shaders.picked,
+            ));
             game.ui.chat.rescale(&game.gui.atlas);
             game.install_loop_context(loop_context);
             game.resolve_entity_renderers();

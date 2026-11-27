@@ -290,6 +290,37 @@ fn shrinking_starts_once_terrain_has_settled() {
 }
 
 #[test]
+fn the_mirror_sees_each_point_where_its_reflection_is() {
+    use glam::{Mat4, Vec3, Vec4};
+    let view_proj = super::world_projection(70.0, 1.5, 512.0)
+        * Mat4::look_to_rh(Vec3::ZERO, Vec3::new(0.3, -0.4, -1.0), Vec3::Y);
+    let plane = -3.25;
+    let mirror = super::view::mirror_view_projection(view_proj, plane);
+    for p in [Vec3::new(1.0, 2.0, -9.0), Vec3::new(-4.0, -1.5, -20.0)] {
+        let reflected = Vec3::new(p.x, 2.0 * plane - p.y, p.z);
+        let a = mirror * Vec4::from((p, 1.0));
+        let b = view_proj * Vec4::from((reflected, 1.0));
+        assert!((a - b).abs().max_element() < 1e-4, "{a} {b}");
+    }
+}
+#[test]
+fn the_mirrors_sky_rays_are_the_cameras_reflected() {
+    use glam::{Mat4, Vec3, Vec4};
+    // A camera looking down: its mirror looks up, by as much.
+    let forward = Vec3::new(0.3, -0.64, -1.0).normalize();
+    let view = Mat4::look_to_rh(Vec3::ZERO, forward, Vec3::Y);
+    let mirrored = super::view::mirror_inverse_view(view.inverse().to_cols_array_2d(), -3.25);
+    let ray = Mat4::from_cols_array_2d(&mirrored) * Vec4::new(0.0, 0.0, -1.0, 0.0);
+    let reflected = Vec3::new(forward.x, -forward.y, forward.z);
+    assert!((ray.truncate() - reflected).length() < 1e-5, "{ray}");
+    // The view's origin, the camera, goes to the mirror's eye.
+    let eye = Mat4::from_cols_array_2d(&mirrored) * Vec4::W;
+    assert!(
+        (eye.truncate() - Vec3::new(0.0, -6.5, 0.0)).length() < 1e-5,
+        "{eye}"
+    );
+}
+#[test]
 fn scaled_screenshots_follow_resolution_scale_and_quality_within_limits() {
     use super::screenshot::scaled_screenshot_factor as factor;
     let big = u64::MAX / 2;

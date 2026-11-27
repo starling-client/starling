@@ -22,6 +22,7 @@ Offer a version only when this build loads it:
 | --- | --- | --- |
 | Content mod (`.smod`) | its manifest `api` is listed | `mod.api` |
 | Native mod (`.smod`) | built against the pinned prebuilt SDK for this exact build | `native_mod.exact_build`, `native_mod.rebuild` |
+| Sunrise shader pack (`.sshader`) | its manifest's `schema` and `api` are listed | `shader.schema`, `shader.api` |
 | Resource pack | always; outside `format` it is marked too old or too new, as vanilla marks it | `resourcepack.format` |
 | Data pack | the same | `datapack.format` |
 | Modpack (`.spack`) | its `format` is this one | `modpack.format` |
@@ -36,7 +37,7 @@ starts and writes them when the player changes a setting.
 | --- | --- | --- | --- |
 | Content mod | `<id>.smod`, or a folder with `sunrise-mod.toml` | `sunrise-mods/` | `sunrise-mods.txt`: a `mod.<id>:true` line turns it on. A mod without one is off |
 | Native mod | `<id>.smod` with `[native]` in `sunrise-mod.toml` | `sunrise-native-mods/` | compiled for the instance's exact build: `mod.<id>:true` turns it on, `mod.<id>:false` turns it off |
-| Shader pack | a `shaders/`-format `.zip` or folder | `shaderpacks/` | `sunrise-graphics.txt`: `pickedShaderPack:<file or folder name>`, empty for none. A pack's options are in `shaderpacks/<name>.txt` |
+| Shader pack | a `.sshader` or a folder with `sunrise-shaders.toml`; a `shaders/`-format `.zip` or folder | `shaderpacks/` | `sunrise-graphics.txt`: `pickedShaderPack:<file or folder name>`, empty for none. A pack's options are in `shaderpacks/<name>.txt` |
 | Resource pack | a `.zip` or a folder with `pack.mcmeta` | `resourcepacks/` | `options.txt`: `resourcePacks:["vanilla","file/<name>"]`, lowest priority first, as vanilla's |
 | Data pack | a `.zip` or a folder with `pack.mcmeta` and `data/` | `saves/<world>/datapacks/` | `saves/<world>/datapacks.json`: `{"enabled": [...], "disabled": [...]}`, each `file/<name>` (or `vanilla`). A pack in neither list is on |
 

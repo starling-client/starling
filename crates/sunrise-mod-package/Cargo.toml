@@ -37,6 +37,8 @@ minisign-verify = { version = "0.3", optional = true }
 object = { version = "0.39", default-features = false, features = ["read", "std"], optional = true }
 # Compare browser claims by file and directory identity, including on Windows.
 same-file = { version = "1", optional = true }
+# A shader pack's check (kind `shader`): the one the game runs before it loads a pack.
+sunrise-shader-api = { path = "../sunrise-shader-api", optional = true }
 # A build's surface (`surface.json`) and a mod's uses table, read with the SDK (feature
 # `prebuilt`): the launcher's fit test.
 
@@ -75,7 +77,7 @@ runtime-process = ["dep:cap-std", "dep:cap-fs-ext", "dep:os_pipe", "dep:libc", "
 prebuilt = ["dep:cap-std", "dep:tar", "dep:xz4rust", "sunrise-mod-surface/scan", "sdk"]
 sdk = []
 # Reading `index.json`, `browser_state`, and native `.smod` bundles without registry-building tools (`tar`, `xz4rust`, `object`, `page`).
-index-read = ["dep:minisign-verify", "dep:same-file"]
+index-read = ["dep:minisign-verify", "dep:sunrise-shader-api", "dep:same-file"]
 # The mod registry's index (docs/modding/src/reference/registry-index.md): the launcher, the registry server and its CI.
 index = ["index-read", "sdk", "dep:object", "dep:libc", "dep:tar", "dep:url", "dep:xz4rust", "dep:zune-jpeg"]
 

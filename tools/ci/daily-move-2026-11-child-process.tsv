@@ -152,6 +152,9 @@ sunrise-server	lib	supervisor::tests::a_game_that_comes_up_ends_the_update_and_p
 sunrise-server	lib	supervisor::tests::a_game_that_cant_load_is_never_switched_to	crates/sunrise-server/src/supervisor.rs:1107	child-process
 sunrise-server	lib	supervisor::tests::a_management_stop_ends_the_supervisor_and_a_stop_in_game_keeps_it	crates/sunrise-server/src/supervisor.rs:1192	child-process
 sunrise-server	lib	update::tests::an_archive_unpacks_beside_the_others_with_the_game_files_linked	crates/sunrise-server/src/update.rs:1280	child-process
+sunrise-shader-api	test:sdk	the_tool_checks_a_0_2_pack	crates/sunrise-shader-api/tests/sdk.rs:43	child-process
+sunrise-shader-api	test:sdk	every_template_makes_a_pack_that_passes	crates/sunrise-shader-api/tests/sdk.rs:73	child-process
+sunrise-shader-api	test:sdk	packs_and_checks_the_package	crates/sunrise-shader-api/tests/sdk.rs:97	child-process
 sunrise-system	lib	tests::this_machine_is_described	crates/sunrise-system/src/lib.rs:1061	child-process
 sunrise-system	lib	tests::this_process_is_measured	crates/sunrise-system/src/lib.rs:1073	child-process
 sunrise-world	lib	native_load_context::tests::fifo_and_directory_do_not_block_or_become_settings	crates/sunrise-world/src/native_load_context.rs:476	child-process

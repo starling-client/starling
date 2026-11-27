@@ -4793,6 +4793,7 @@ dependencies = [
  "sunrise-port-pack",
  "sunrise-protocol",
  "sunrise-server-files",
+ "sunrise-shader-api",
  "sunrise-shaders",
  "sunrise-system",
  "sunrise-telemetry",
@@ -4902,6 +4903,7 @@ dependencies = [
  "sunrise-prepare",
  "sunrise-protocol",
  "sunrise-server-files",
+ "sunrise-shader-api",
  "sunrise-shaders",
  "sunrise-telemetry",
  "sunrise-theme",
@@ -4971,6 +4973,7 @@ dependencies = [
  "sunrise-protocol",
  "sunrise-render-core",
  "sunrise-render-shaderpack",
+ "sunrise-shader-api",
  "sunrise-shaders",
  "sunrise-system",
  "sunrise-theme",
@@ -5322,6 +5325,7 @@ dependencies = [
  "sunrise-mod-source",
  "sunrise-mod-surface",
  "sunrise-mod-vocab",
+ "sunrise-shader-api",
  "syn 2.0.119",
  "tar",
  "tempfile",
@@ -5533,6 +5537,7 @@ dependencies = [
  "sunrise-perf-format",
  "sunrise-protocol",
  "sunrise-server-files",
+ "sunrise-shader-api",
  "sunrise-shaders",
  "sunrise-system",
  "sunrise-telemetry",
@@ -5791,6 +5796,21 @@ dependencies = [
  "toml",
  "toml_edit",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "sunrise-shader-api"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "naga",
+ "png",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sunrise-mod-pipeline",
+ "toml",
+ "zip",
 ]
 
 [[package]]

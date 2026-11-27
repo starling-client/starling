@@ -42,6 +42,8 @@ sunrise-server-files = { path = "../sunrise-server-files" }
 sunrise-java-properties = { path = "../sunrise-java-properties" }
 # Shader packs: reading them and turning their GLSL into naga modules.
 sunrise-shaders = { path = "../sunrise-shaders" }
+# Sunrise's own shader packs: the format, the stages and the check (docs/shaders.md).
+sunrise-shader-api = { path = "../sunrise-shader-api" }
 # Play with Friends: invite codes and their tunnel; the `friends` feature.
 sunrise-friends = { path = "../sunrise-friends", optional = true }
 # The narrator (GameNarrator): text-to-speech of chat, system messages and screens.

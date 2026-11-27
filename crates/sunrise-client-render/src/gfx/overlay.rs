@@ -226,8 +226,14 @@ impl Renderer {
             // GameRenderer.render -> preparePostEffects(Collections.emptyList()).
             post.clear_active(frame.post_effects.root);
         }
-        // The layered frame's light eases into the peak, before the camera overlays draw on it.
-        if sunrise_tone_curve(layered, !frame.title)
+        // The layered frame's light eases into the peak, before the camera overlays draw on it,
+        // unless a 0.2 pack's own `[tonemap]` did.
+        let pack_tonemap = self
+            .native
+            .as_ref()
+            .and_then(|n| n.post.as_ref())
+            .is_some_and(native_post::NativePost::tonemaps);
+        if sunrise_tone_curve(layered, !frame.title, pack_tonemap)
             && let Some(hdr) = &self.hdr
         {
             hdr.tonemap(encoder, timing.as_mut());

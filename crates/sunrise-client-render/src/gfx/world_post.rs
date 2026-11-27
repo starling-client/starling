@@ -409,6 +409,23 @@ impl Post {
         )
     }
 
+    /// The next world target's possible input sizes, including existing allocation fallbacks.
+    pub(super) fn render_sizes(
+        &self,
+        window: [u32; 2],
+        scale: f32,
+        taa: bool,
+    ) -> impl Iterator<Item = [u32; 2]> + Clone + use<> {
+        let upscale = if taa && self.taa && self.taa_resources.is_some() {
+            self.upscale
+        } else {
+            1.0
+        };
+        std::iter::successors(Some(scale), |&scale| reduced_scale(scale))
+            .map(move |scale| Self::sizes_with_upscale(window, scale, upscale).0)
+            .chain(std::iter::once(window))
+    }
+
     /// The next TAA frame's input size, even before its first jitter or resize.
     pub(super) fn taa_render_size(&self, window: [u32; 2]) -> [u32; 2] {
         Self::sizes_with_upscale(window, self.scale, self.upscale).0

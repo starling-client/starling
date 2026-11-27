@@ -646,11 +646,11 @@ Not implemented ([docs/graphics.md](docs/graphics.md)). Anisotropic filtering ne
 
 #### Well-known shader looks, rewritten for Sunrise
 
-Popular shader packs rewritten as Iris/OptiFine-format packs, so good packs exist from the start. Only packs whose licence is open source and compatible with ours are rewritten, never anything else.
+Popular shader packs rewritten in Sunrise's format, so good packs exist from the start. Only packs whose licence is open source and compatible with ours are rewritten, never anything else.
 
 <details><summary>Technical</summary>
 
-The first candidates are Photon, Chocapic13 and MakeUp Ultra Fast, each only after its licence is read and recorded: a pack is rewritten only if it is open source and compatible with Sunrise's licence, and the rewrite is written from the shader format's documentation and the look on screen, not from anyone's code.
+The first candidates are Photon, Chocapic13 and MakeUp Ultra Fast, each only after its licence is read and recorded: a pack is rewritten only if it is open source and compatible with Sunrise's licence, and the rewrite is written from the shader format's documentation and the look on screen, not from anyone's code. Today only the Golden Hour example exists (`[crates/sunrise-shader-api/packs/golden_hour](crates/sunrise-shader-api/packs/golden_hour)`).
 
 More: [docs/shaders.md](docs/shaders.md)
 
@@ -899,6 +899,7 @@ More: [https://playsunrise.net/docs/performance](https://playsunrise.net/docs/pe
 - **Chat settings and team prefixes** (v0.2.67): The Hidden and Commands Only chat settings should hide chat, and team prefixes should appear before names in chat. [#1376](https://github.com/horizon-rust/horizon/issues/1376) · [#1378](https://github.com/horizon-rust/horizon/issues/1378) · [#1932](https://github.com/horizon-rust/horizon/issues/1932) · [#1841](https://github.com/horizon-rust/horizon/issues/1841)
 - **Cooldowns drawn on items** (v0.2.67): After you throw an ender pearl, its slot should show the cooldown sweeping away, as in vanilla. [#1763](https://github.com/horizon-rust/horizon/issues/1763) · [#1933](https://github.com/horizon-rust/horizon/issues/1933)
 - **Pre-generate an area with /pregen** (v0.2.67): A /pregen command that builds an area of the world ahead of time, so players don't wait for new terrain when they explore. [#1805](https://github.com/horizon-rust/horizon/issues/1805)
+- **Sunrise's own shader format and kit** (v0.2.70): Sunrise's own way to make shader packs, with tools to write and test them. Every pack is checked before it runs, and the registry will list them. [#1820](https://github.com/horizon-rust/horizon/issues/1820) · [#1822](https://github.com/horizon-rust/horizon/issues/1822) · [#1861](https://github.com/horizon-rust/horizon/issues/1861) · [#1863](https://github.com/horizon-rust/horizon/issues/1863) · [#1855](https://github.com/horizon-rust/horizon/issues/1855) · [docs/shaders.md](docs/shaders.md) · [docs/api/shaders.md](docs/api/shaders.md)
 - **Server dialogs and login screens** (v0.2.67): Servers that show dialogs, such as the register and login screens of AuthMe, will work in Sunrise. [#1720](https://github.com/horizon-rust/horizon/issues/1720) · [#1734](https://github.com/horizon-rust/horizon/issues/1734) · [#1735](https://github.com/horizon-rust/horizon/issues/1735)
 - **Microsoft sign-in** (launcher@0.2.17): Sign in with your Microsoft account in the launcher to play on online-mode servers. [docs/microsoft-account.md](docs/microsoft-account.md) · [#2879](https://github.com/horizon-rust/horizon/issues/2879)
 - **HDR monitors** (v0.2.74): Output for HDR monitors: brighter highlights and richer colour where your screen supports it. [#1441](https://github.com/horizon-rust/horizon/issues/1441) · [#2021](https://github.com/horizon-rust/horizon/issues/2021) · [#2292](https://github.com/horizon-rust/horizon/issues/2292)

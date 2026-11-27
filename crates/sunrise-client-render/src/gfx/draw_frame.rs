@@ -1,3 +1,5 @@
+#[path = "frame/shadow.rs"]
+mod shadow;
 #[path = "frame/sky.rs"]
 mod sky;
 #[path = "frame/submit.rs"]
@@ -8,6 +10,8 @@ mod acquire_frame;
 use acquire_frame::AcquiredFrame;
 #[path = "frame/post.rs"]
 mod post;
+#[path = "frame/water_mirror.rs"]
+mod water_mirror;
 use super::*;
 use post::{PostPassArgs, PostPassResult};
 
@@ -163,7 +167,9 @@ impl Renderer {
         let view_proj = transforms.draw_view_proj;
         laps.lap("r_acquire");
         // TAA runs where the world post pass does, not under a shader pack's own.
-        let taa = !frame.title && self.pack_post.as_ref().is_none_or(|p| p.1.is_none());
+        let taa = !frame.title
+            && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
+            && self.native.as_ref().is_none_or(|n| n.post.is_none());
         let hdr_lighting = self.shader_pack_kind().is_none();
         if let Some(hdr) = &mut self.hdr {
             hdr.lighting = hdr_lighting && hdr.look;
@@ -403,10 +409,24 @@ impl Renderer {
         let view = transforms.cull_frustum;
         let camera = frame.camera;
         let camera_section = camera_section(camera, self.layout.min_y());
+        // The water mirror draws the same lists: they take in what its camera sees too
+        // (above the screen's top, the far shore, the trees against the sky).
+        let mirror_plane = frame
+            .water_plane
+            .filter(|_| !frame.title && self.wants_water_plane());
+        let mirror = mirror_plane.map(|plane| {
+            Frustum::from_planes(frustum(view::mirror_view_projection(
+                cull_proj,
+                plane - frame.camera.y as f32,
+            )))
+        });
         // Solid quads facing away from the eye are left out: the bob moves
         // the eye off `camera`, so it is found from the composed draw projection.
         let rendered_eye = transforms.rendered_eye;
         let eye = rendered_eye.filter(|_| self.sides_on);
+        let mirror_low = mirror_plane
+            .zip(eye)
+            .map(|(plane, eye)| 2.0 * (plane - frame.camera.y as f32) - eye.y);
         let bounded = !frame.title;
         if bounded {
             crate::spans::time("occlusion", || {
@@ -429,6 +449,12 @@ impl Renderer {
             .and_then(|p| p.1.as_mut())
             .filter(|_| !frame.title)
             .and_then(|p| p.shadow_view(frame))
+            .or_else(|| {
+                // One of Sunrise's own packs with `[shadow]` uses the same lists.
+                let native = self.native.as_ref().filter(|_| !frame.title)?;
+                native.shadow.as_ref()?;
+                native.frame.shadow_view(frame)
+            })
             .or_else(|| {
                 self.external
                     .as_ref()
@@ -460,12 +486,21 @@ impl Renderer {
             mark_fades(sections, &mut gpu.records, &mut gpu.fades, rows, fades);
         }
         // The near solid sections culled and drawn on the GPU (`gpu_culling`): never where a
-        // shader pack's terrain or a shadow pass draws the CPU's lists.
-        // Decided before the walk, so that a pass whose buffers no longer fit can
+        // shader pack's terrain, a shadow pass or the water mirror draws the CPU's lists, nor
+        // under a native pack's `[displacement]`, whose grid takes its quads from the walk's
+        // `visible`. Decided before the walk, so that a pass whose buffers no longer fit can
         // still switch GPU culling off.
         let radius = (frame.detail_distance / 16.0) as i32;
-        let mut gpu_frame =
-            self.gpu_culling.is_some() && !frame.title && !pack_terrain && shadow_view.is_none();
+        let displaced = self
+            .native
+            .as_ref()
+            .is_some_and(|n| n.displacement.is_some());
+        let mut gpu_frame = self.gpu_culling.is_some()
+            && !frame.title
+            && !pack_terrain
+            && shadow_view.is_none()
+            && mirror_plane.is_none()
+            && !displaced;
         #[cfg(debug_assertions)]
         if gpu_frame {
             if self.gpu_checks.is_multiple_of(64) {
@@ -522,7 +557,7 @@ impl Renderer {
             self.sections.walk(
                 camera,
                 radius,
-                &view,
+                &Frusta(view, mirror),
                 |k| !bounded || reachable.contains(k),
                 |x, z| {
                     (!cutout.is_empty() && cutout.contains(&(x, z)))
@@ -737,6 +772,32 @@ impl Renderer {
                 bytemuck::cast_slice(&self.origins),
             );
         }
+        // `[displacement]`: the solid quads of the sections it reaches, nearest first.
+        if let Some(d) = self.native.as_mut().and_then(|n| n.displacement.as_mut()) {
+            let near: smallvec::SmallVec<[displace::Near<'_>; displace::MAX_SECTIONS]> =
+                if frame.title {
+                    smallvec::SmallVec::new()
+                } else {
+                    visible
+                        .iter()
+                        .filter(|v| {
+                            let o = glam::Vec3::from(v.origin);
+                            let closest = glam::Vec3::ZERO.clamp(o, o + 16.0);
+                            closest.length() < d.distance
+                        })
+                        .filter_map(|v| {
+                            let s = self.sections.get(v.slot);
+                            (s.solid > 0).then(|| displace::Near {
+                                buffer: self.arena.buffer(s.page),
+                                base: s.solid_base(),
+                                quads: s.solid,
+                                origin: v.origin,
+                            })
+                        })
+                        .collect()
+                };
+            d.prepare(&self.device, &self.queue, &mut encoder, &near, view_proj);
+        }
         // Solid sections front to back, then translucent ones back to front,
         // as one list of indirect draws over the section arena.
         self.draws.clear();
@@ -754,6 +815,8 @@ impl Renderer {
                     && !frame.title
                     && !pack_terrain
                     && self.multi_draw
+                    // Occlusion is found from the camera, not the mirror's eye.
+                    && mirror.is_none()
                     // It tests the CPU's lists, which leave out GPU culling's sections.
                     && !gpu_frame
                     && visible.len() >= c.min_sections
@@ -814,7 +877,7 @@ impl Renderer {
             let mut runs = [(0, 0, 0); 2];
             for (run, &(group, part)) in runs.iter_mut().zip(parts) {
                 let start = draws.len();
-                facing_runs_from(&s.sides, eye, v.origin, part, |first, quads| {
+                facing_runs_from(&s.sides, eye, mirror_low, v.origin, part, |first, quads| {
                     indices += quads * 6;
                     let base = s.solid_base() + first * 4;
                     draws.push([quads * 6, instances, 0, base, i as u32]);
@@ -898,7 +961,7 @@ impl Renderer {
             let mut runs = [(0, 0, 0); 2];
             for (run, &(group, part)) in runs.iter_mut().zip(parts) {
                 let start = draws.len();
-                facing_runs_from(&s.sides, eye, v.origin, part, |first, quads| {
+                facing_runs_from(&s.sides, eye, mirror_low, v.origin, part, |first, quads| {
                     indices += quads * 6;
                     let base = s.solid_base() + first * 4;
                     draws.push([quads * 6, instances, 0, base, index as u32]);
@@ -972,10 +1035,11 @@ impl Renderer {
         // Only the camera's own pass takes a section's translucent order with the quads that face
         // away left out: a shadow, a mirrored view or a pack's own pipelines draw them all.
         // The eye it keeps them for is the projection's (`rendered_eye`), not the camera: the bob
-        // moves it.
+        // moves it, and the water mirror draws no translucent terrain.
         let cull_back = shadow_view.is_none()
             && rendered_eye.is_some()
             && !pack_terrain
+            && self.native.is_none()
             && self.world_views.sections.sections().next().is_none();
         // The re-sort's own complete set: the near sections and every far tile in view,
         // so its budget and rotation are the same whichever solid draws the GPU owns.
@@ -1315,6 +1379,9 @@ impl Renderer {
         });
         // The world's targets: the screen, or the scaled target of `post`.
         let pack_post = !frame.title && self.pack_post.as_ref().is_some_and(|p| p.1.is_some());
+        // One of Sunrise's own packs reads the same world target.
+        let native_post = !frame.title && self.native.as_ref().is_some_and(|n| n.post.is_some());
+        let pack_reads_world = pack_post || native_post;
         let pack_draws_sky = pack_post
             && self
                 .pack_post
@@ -1338,7 +1405,7 @@ impl Renderer {
         let scaled = self.world_post.prepare(
             &self.device,
             [self.config.width, self.config.height],
-            pack_post || fg,
+            pack_reads_world || fg,
         );
         let pack_world_runs = pack_post && scaled.is_some();
         let after_pack_features = live_hooks
@@ -1418,6 +1485,37 @@ impl Renderer {
                 bytemuck::cast_slice(&frame.celestial[..celestial_vertices]),
             );
         }
+        // One of Sunrise's own packs: this frame's inputs; in a timed frame its sky draws in a
+        // pass of its own, so that it has a time of its own.
+        let mut native_sky_pass = false;
+        if !frame.title
+            && let Some(native) = &mut self.native
+        {
+            let size = self
+                .world_post
+                .size()
+                .filter(|_| scaled.is_some())
+                .unwrap_or([self.config.width, self.config.height]);
+            native
+                .frame
+                .write(&self.queue, frame, size, output.display());
+            native.frame.block_light.update(
+                &self.queue,
+                frame.camera,
+                &self.light_blocks,
+                self.light_revision,
+            );
+            if let Some(t) = &mut native.timing {
+                t.begin(
+                    &self.device,
+                    &self.queue,
+                    &self.device_lost,
+                    super::in_flight::poll_live,
+                )?;
+                native_sky_pass =
+                    native.sky.is_some() && t.recording() && sky_visible && frame.skybox;
+            }
+        }
         // Complete the separate engine sky pass before buffer preparation only when a
         // listener subscribes to `RenderLevelStage::AfterSky`. The main world pass
         // loads that colour and starts its own depth as usual. A classic pack's replacement
@@ -1432,6 +1530,16 @@ impl Renderer {
                 Some((color, depth)) => (color, depth),
                 None => (&view_target, &self.depth),
             };
+            if native_sky_pass {
+                Self::draw_timed_native_sky(
+                    &mut self.native,
+                    &self.device,
+                    &self.group,
+                    &mut encoder,
+                    (color, depth, self.output.frame.format),
+                    clear,
+                );
+            }
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Sunrise sky"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1439,7 +1547,11 @@ impl Renderer {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear),
+                        load: if native_sky_pass {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(clear)
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -1460,6 +1572,7 @@ impl Renderer {
                 frame,
                 sky_visible,
                 false,
+                native_sky_pass,
                 celestial_vertices,
                 pack_draws_celestial,
                 sky_switches,
@@ -1792,12 +1905,14 @@ impl Renderer {
                 dynamic_first,
             );
         }
+        let native_clouds = self.native.as_ref().is_none_or(|n| n.vanilla_clouds);
         // A pack's core/clouds, decided before either mesh is prepared: its faces, or none and
         // the native mesh in this same frame.
         let pack_clouds = core_clouds::CloudsFrame {
             pack_shader: self.core_clouds.as_ref().is_some_and(|c| c.classic()),
             pack_oit_shader: (self.core_clouds.as_ref()).is_some_and(|c| c.improved_transparency()),
             clouds: frame.clouds.is_some(),
+            native_clouds,
             improved_transparency: oit_on,
             shader_pack: self.pack_post.as_ref().is_some_and(|p| p.1.is_some()),
             title: frame.title,
@@ -1839,7 +1954,7 @@ impl Renderer {
         let native_input = frame
             .clouds
             .as_ref()
-            .filter(|_| core_clouds::native_mesh(pack_cloud_quads));
+            .filter(|_| core_clouds::native_mesh(native_clouds, pack_cloud_quads));
         let cloud_quads = if let Some(input) = native_input {
             let (rebuilt, uniform) =
                 crate::spans::time("clouds", || self.cloud_mesh.prepare(input));
@@ -2246,7 +2361,7 @@ impl Renderer {
         }
         // The translucent terrain pass reads its draws from phase 2's buffer, where the tests of
         // the sections left to phase 2 give them their instance. Where it draws from
-        // `self.indirect` (flat draws, improved transparency), or no test
+        // `self.indirect` (flat draws, improved transparency, a pack's material), or no test
         // runs (no solid draws), every translucent draw stays.
         let flat_frame_possible = self.flat_on
             && self
@@ -2257,6 +2372,7 @@ impl Renderer {
             && solid_draws > 0
             && !flat_frame_possible
             && !oit_on
+            && self.native.is_none()
             && !self.translucent_marks.is_empty();
         let phase2_end = if translucent_culled {
             let (skip, tail) = (solid_draws - phase1_draws, solid_draws + translucent_draws);
@@ -2288,7 +2404,8 @@ impl Renderer {
             );
         }
         // On Adreno, shader packs keep the draws they had: its bar is for frames without one.
-        let flat_by_count = !adreno::adreno_vulkan(&self.info) || self.pack_post.is_none();
+        let flat_by_count = !adreno::adreno_vulkan(&self.info)
+            || (self.native.is_none() && self.pack_post.is_none());
         let flat_frame = match &mut self.flat {
             Some(flat)
                 if self.flat_on
@@ -2302,14 +2419,17 @@ impl Renderer {
                         || shadow_view.is_some()) =>
             {
                 // The visibility buffer's phase 2 IDs need each call's page (`visbuffer`).
-                flat.page_instances =
-                    self.visbuf.is_some() && !pack_terrain && shadow_view.is_none();
+                flat.page_instances = self.visbuf.is_some()
+                    && !pack_terrain
+                    && shadow_view.is_none()
+                    && self.native.as_ref().is_none_or(|n| n.material.is_none());
                 let sections = &self.sections;
                 let lods = &self.lods;
                 let (sorted, lists) = (&self.sorted_indices, &self.world_views.sections);
                 let phase2 = self.cull.as_ref().filter(|_| culling).map(|c| &c.phase2);
                 let cache_quads = self.flat_quad_cache_on
                     && adreno::adreno_vulkan(&self.info)
+                    && self.native.is_none()
                     && self.pack_post.is_none()
                     && self.hdr.is_none()
                     && phase2.is_none();
@@ -2400,7 +2520,7 @@ impl Renderer {
             self.sourced
                 .dispatch(&mut encoder, self.own_timing.as_mut());
         }
-        if let Some(timer) = Self::pass_timer(&mut self.pack_post)
+        if let Some(timer) = Self::pass_timer(&mut self.pack_post, &mut self.native)
             && timer.is_some() != self.pass_timing
         {
             *timer = self
@@ -2408,7 +2528,7 @@ impl Renderer {
                 .then(|| pack_timing::PassTiming::new(&self.device, &self.queue))
                 .flatten();
         }
-        if let Some(Some(t)) = Self::pass_timer(&mut self.pack_post) {
+        if let Some(Some(t)) = Self::pass_timer(&mut self.pack_post, &mut self.native) {
             t.gap = self.pass_timing_gap;
             t.keep_frames(self.keep_timed_frames);
         }
@@ -2417,7 +2537,7 @@ impl Renderer {
         // Post effects (a resource pack's chains, `use_depth_buffer`) read the world's depth
         // after the world pass, as `GameRenderer.render` hands them the main target's.
         let post_reads_depth = !frame.title && !frame.post_effects.effects.is_empty();
-        let keep_depth = pack_post
+        let keep_depth = pack_reads_world
             || post_reads_depth
             || (taa && self.world_post.taa)
             || oit_on
@@ -2531,7 +2651,31 @@ impl Renderer {
             }
         }
         laps.lap("r_world_pass");
+        self.draw_shadow_passes(
+            &mut encoder,
+            frame,
+            shadow_view.as_ref(),
+            flat_frame,
+            shadow_first,
+            shadow_solid,
+            shadow_translucent,
+            entity_quads,
+            shadow_only_quads,
+            outline_base,
+        );
         laps.lap("r_pack_inputs");
+        let reflection = self.draw_water_mirror(
+            &mut encoder,
+            frame,
+            globals,
+            view_proj,
+            scaled.as_ref(),
+            mirror_plane,
+            clear,
+            sky_visible,
+            flat_frame,
+            solid_draws,
+        );
         let (world_view, world_depth) = match &scaled {
             Some((color, depth)) => (color, depth),
             None => (&view_target, &self.depth),
@@ -2552,7 +2696,52 @@ impl Renderer {
             && fg_frames.is_none()
             && !live_hooks
             && !native_render::world_drawn_hooked();
+        if native_sky_pass && !separate_sky {
+            Self::draw_timed_native_sky(
+                &mut self.native,
+                &self.device,
+                &self.group,
+                &mut encoder,
+                (world_view, world_depth, self.output.frame.format),
+                clear,
+            );
+        }
+        if let Some(native) = &mut self.native {
+            let reflection =
+                reflection.map(|view| native.frame.linear_mirror(&self.device, &mut encoder, view));
+            native
+                .frame
+                .set_reflection(&self.device, reflection.as_ref());
+        }
+        // The material stage's copies of the world before translucent terrain, the size of
+        // this frame's targets.
+        if let Some(native) = &mut self.native
+            && native.material.is_some()
+            && !frame.title
+        {
+            let color = scaled.as_ref().map(|(c, _)| c.texture());
+            native
+                .frame
+                .fit_opaque(&self.device, world_depth.texture(), color);
+        }
+        if let Some(native) = self.native.as_mut().filter(|_| !frame.title) {
+            let writes = native.material.as_ref().is_some_and(|m| m.writes_surface);
+            let depth = world_depth.texture();
+            let size = if writes {
+                [depth.width(), depth.height()]
+            } else {
+                [1, 1]
+            };
+            native.frame.fit_surface(&self.device, size);
+        }
         laps.lap("r_mirror");
+        // One of Sunrise's own packs with a material stage: terrain draws with its pipelines,
+        // which read the pack's frame at group 3.
+        let material = self
+            .native
+            .as_ref()
+            .filter(|_| !frame.title)
+            .and_then(|n| Some((n.material.as_ref()?, &n.frame.group)));
         // Without HDR output, the solid shaders without its lighting (`SolidPipeline`).
         let hdr = self.hdr.is_some();
         let settled_single = self.solid_settled_single.as_ref().filter(|_| {
@@ -2561,13 +2750,17 @@ impl Renderer {
                 && !frame.title
                 && !flat_frame
                 && !gpu_frame
+                && self.native.is_none()
                 && self.pack_post.is_none()
                 && cull.is_none()
                 && phase1_draws > 0
                 && solid_paths::can_use_settled(&self.origins, self.texture_filtering)
         });
         self.settled_single_active = settled_single.is_some();
-        let solid_pipeline = settled_single.unwrap_or_else(|| self.solid.get(hdr));
+        let solid_pipeline = material.map_or(
+            settled_single.unwrap_or_else(|| self.solid.get(hdr)),
+            |(m, _)| &m.solid,
+        );
         // Two solid passes only where a discard costs the GPU its hidden surface
         // removal: Apple's tiled GPUs, behind Metal, and Adreno's Vulkan (`splits_solid`).
         // Elsewhere the second pass would double the solid draw calls and vertex work.
@@ -2578,19 +2771,42 @@ impl Renderer {
             .flatten();
         let solid_passes = sdr_paths
             .or(self.solid_paths.as_ref())
-            .filter(|_| split_solid && self.pack_post.is_none())
+            .filter(|_| split_solid && self.native.is_none() && self.pack_post.is_none())
             .filter(|_| cull.is_none())
             .map_or_else(Default::default, |paths| {
                 paths.for_frame(&self.origins, self.texture_filtering)
             });
+        let translucent_pipeline = material.map_or(&self.translucent, |(m, _)| &m.translucent);
+        let pack_flat = material.and_then(|(m, _)| m.flat.as_ref());
+        // A material stage's translucent pass reads a copy of the depth the solid terrain
+        // left: it is stored across the pass that ends before the copy.
+        let keep_depth = keep_depth || material.is_some();
         // GPU culling's occlusion test splits the world pass as cull.rs's does.
         let gpu_occluding = gpu_frame && self.gpu_culling.as_ref().is_some_and(|g| g.occluding());
+        let pack_frame = |pass: &mut wgpu::RenderPass<'_>| {
+            if let Some((_, group)) = material {
+                pass.set_bind_group(sunrise_shader_api::stages::GROUP, group, &[]);
+            }
+        };
+        // A pack's solid terrain that calls `set_surface` also writes the surface target, in
+        // passes of its own between the sky and everything else.
+        let surface = self
+            .native
+            .as_ref()
+            .filter(|n| {
+                !frame.title
+                    && !pack_draws_terrain
+                    && n.material.as_ref().is_some_and(|m| m.writes_surface)
+            })
+            .map(|n| n.frame.surface_view.clone());
         // Solid terrain through the visibility buffer (`visbuffer`): flat frames without a
-        // pack drawing terrain or a shadow pass.
+        // pack drawing terrain, a material stage, a surface target or a shadow pass.
         let vis_frame = flat_frame
             && !frame.title
             && !pack_terrain
             && !pack_draws_terrain
+            && material.is_none()
+            && surface.is_none()
             && shadow_view.is_none()
             && self
                 .arena
@@ -2607,7 +2823,7 @@ impl Renderer {
                 resolve_target: None,
                 depth_slice: None,
                 ops: wgpu::Operations {
-                    load: if separate_sky {
+                    load: if native_sky_pass || separate_sky {
                         wgpu::LoadOp::Load
                     } else {
                         wgpu::LoadOp::Clear(clear)
@@ -2643,6 +2859,7 @@ impl Renderer {
                 "before translucent",
             );
             pass.set_bind_group(0, &self.group, &[]);
+            pack_frame(&mut pass);
             // Starling: the vanilla Overworld sky waits for solid terrain (`late_sky`), unless a
             // mod draws at the sky's boundary (`sky_stage`).
             let late_sky = self.late_sky.as_ref().filter(|_| {
@@ -2651,7 +2868,9 @@ impl Renderer {
                     && frame.skybox
                     && !frame.end_sky
                     && sky_stage.is_none()
+                    && self.native.is_none()
                     && self.pack_post.is_none()
+                    && mirror.is_none()
                     && cull.is_none()
             });
             if !separate_sky && late_sky.is_none() {
@@ -2663,6 +2882,7 @@ impl Renderer {
                     frame,
                     sky_visible,
                     pack_draws_sky,
+                    native_sky_pass,
                     celestial_vertices,
                     pack_draws_celestial,
                     sky_switches,
@@ -2712,6 +2932,27 @@ impl Renderer {
             // Keep the cursor for engine-supplied test batches. Mod stage callbacks draw only
             // explicitly selected prepared ranges at their real boundaries.
             let mut primitive_stage = 0;
+            let terrain_pass =
+                |encoder: &mut wgpu::CommandEncoder, surface: &wgpu::TextureView, clear: bool| {
+                    // Its lifetime forgotten: a closure cannot tie it to `encoder`'s.
+                    let mut pass = surface_pass(encoder, world_view, surface, world_depth, clear)
+                        .forget_lifetime();
+                    pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
+                    pack_timing::CountedPass::plain(pass)
+                };
+            // The occlusion test's pipeline draws into the world's colour alone.
+            let plain_pass = |encoder: &mut wgpu::CommandEncoder| {
+                let mut pass = after_culling_pass(encoder, world_view, world_depth, true, None)
+                    .forget_lifetime();
+                pass.set_bind_group(0, &self.group, &[]);
+                pack_frame(&mut pass);
+                pack_timing::CountedPass::plain(pass)
+            };
+            if let Some(surface) = &surface {
+                drop(pass);
+                pass = terrain_pass(&mut encoder, surface, true);
+            }
             match self
                 .flat
                 .as_ref()
@@ -2734,10 +2975,7 @@ impl Renderer {
                     drop(ids);
                     if let Some(cull) = cull {
                         // The test's pipeline draws into the world's colour.
-                        let test =
-                            after_culling_pass(&mut encoder, world_view, world_depth, true, None);
-                        let mut test = pack_timing::CountedPass::plain(test);
-                        test.set_bind_group(0, &self.group, &[]);
+                        let mut test = plain_pass(&mut encoder);
                         cull.test(&mut test);
                         drop(test);
                         cull.test_pass(&mut encoder, self.own_timing.as_mut());
@@ -2766,6 +3004,7 @@ impl Renderer {
                         world_pixels,
                     );
                     pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 Some(flat) => {
@@ -2777,8 +3016,9 @@ impl Renderer {
                     let phase2_split = phase2_split - flat.phase1_calls;
                     let phase2_calls = flat.solid_calls - flat.phase1_calls;
                     type Calls = std::ops::Range<usize>;
-                    let passes: &[(&wgpu::RenderPipeline, Calls, Calls)] = if split_solid {
-                        &[
+                    let passes: &[(&wgpu::RenderPipeline, Calls, Calls)] = match pack_flat {
+                        Some(p) => &[(&p.0, 0..flat.phase1_calls, 0..phase2_calls)],
+                        None if split_solid => &[
                             (
                                 solid_passes
                                     .opaque(true)
@@ -2793,9 +3033,8 @@ impl Renderer {
                                 cutout..flat.phase1_calls,
                                 phase2_split..phase2_calls,
                             ),
-                        ]
-                    } else {
-                        &[(flat.solid.get(hdr), 0..flat.phase1_calls, 0..phase2_calls)]
+                        ],
+                        None => &[(flat.solid.get(hdr), 0..flat.phase1_calls, 0..phase2_calls)],
                     };
                     let draw = |pass: &mut wgpu::RenderPass<'_>| {
                         for (pipeline, calls, _) in passes {
@@ -2809,22 +3048,30 @@ impl Renderer {
                         // that the test saw, copied after it.
                         Some(cull) => {
                             draw(&mut pass);
+                            if surface.is_some() {
+                                drop(pass);
+                                pass = plain_pass(&mut encoder);
+                            }
                             pass.split(self.own_timing.as_mut(), "occlusion boxes");
                             pass.stage(self.own_timing.as_mut(), "occlusion boxes");
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder, self.own_timing.as_mut());
                             flat.flatten_phase2(&mut encoder, self.own_timing.as_mut());
-                            pass = world_pass_after_culling(
-                                &mut encoder,
-                                world_view,
-                                world_depth,
-                                keep_depth,
-                                self.own_timing.as_mut(),
-                                "World after culling",
-                                world_pixels,
-                            );
+                            pass = match &surface {
+                                Some(surface) => terrain_pass(&mut encoder, surface, false),
+                                None => world_pass_after_culling(
+                                    &mut encoder,
+                                    world_view,
+                                    world_depth,
+                                    keep_depth,
+                                    self.own_timing.as_mut(),
+                                    "World after culling",
+                                    world_pixels,
+                                ),
+                            };
                             pass.set_bind_group(0, &self.group, &[]);
+                            pack_frame(&mut pass);
                             pass.stage(self.own_timing.as_mut(), "solid terrain phase 2");
                             for (pipeline, _, calls) in passes {
                                 pass.set_pipeline(pipeline);
@@ -2838,30 +3085,32 @@ impl Renderer {
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 None => {
-                    // On Metal, the opaque pass, then the cutout one (terrain.wgsl's
-                    // `opaque_quad`), each over phase 1's and phase 2's lists with quads for it.
+                    // Without a native material, on Metal, the opaque pass, then the
+                    // cutout one (terrain.wgsl's `opaque_quad`), each over phase 1's
+                    // and phase 2's lists with quads for it.
                     let (opaque, cutout) = (opaque_end as u32, cutout_start as u32);
                     type Draws = std::ops::Range<u32>;
-                    let passes: &[(&wgpu::RenderPipeline, Draws, Draws)] = match &self.solid_split {
-                        Some((opaque_pipeline, cutout_pipeline)) => &[
-                            (
-                                solid_passes
-                                    .opaque(false)
-                                    .unwrap_or(opaque_pipeline.get(hdr)),
-                                0..opaque,
-                                phase1_draws..phase2_cutout,
-                            ),
-                            (
-                                solid_passes
-                                    .cutout(false)
-                                    .unwrap_or(cutout_pipeline.get(hdr)),
-                                cutout..phase1_draws,
-                                phase2_cutout..solid_draws,
-                            ),
-                        ],
-                        None => &[(solid_pipeline, 0..phase1_draws, phase1_draws..solid_draws)],
-                    };
-                    // The solid pipelines read the page themselves.
+                    let passes: &[(&wgpu::RenderPipeline, Draws, Draws)] =
+                        match (material, &self.solid_split) {
+                            (None, Some((opaque_pipeline, cutout_pipeline))) => &[
+                                (
+                                    solid_passes
+                                        .opaque(false)
+                                        .unwrap_or(opaque_pipeline.get(hdr)),
+                                    0..opaque,
+                                    phase1_draws..phase2_cutout,
+                                ),
+                                (
+                                    solid_passes
+                                        .cutout(false)
+                                        .unwrap_or(cutout_pipeline.get(hdr)),
+                                    cutout..phase1_draws,
+                                    phase2_cutout..solid_draws,
+                                ),
+                            ],
+                            _ => &[(solid_pipeline, 0..phase1_draws, phase1_draws..solid_draws)],
+                        };
+                    // The solid pipelines, a native material's too, read the page themselves.
                     let pulled = self.flat.is_some();
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
@@ -2883,21 +3132,29 @@ impl Renderer {
                                     pulled,
                                 );
                             }
+                            if surface.is_some() {
+                                drop(pass);
+                                pass = plain_pass(&mut encoder);
+                            }
                             pass.split(self.own_timing.as_mut(), "occlusion boxes");
                             pass.stage(self.own_timing.as_mut(), "occlusion boxes");
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder, self.own_timing.as_mut());
-                            pass = world_pass_after_culling(
-                                &mut encoder,
-                                world_view,
-                                world_depth,
-                                keep_depth,
-                                self.own_timing.as_mut(),
-                                "World after culling",
-                                world_pixels,
-                            );
+                            pass = match &surface {
+                                Some(surface) => terrain_pass(&mut encoder, surface, false),
+                                None => world_pass_after_culling(
+                                    &mut encoder,
+                                    world_view,
+                                    world_depth,
+                                    keep_depth,
+                                    self.own_timing.as_mut(),
+                                    "World after culling",
+                                    world_pixels,
+                                ),
+                            };
                             pass.set_bind_group(0, &self.group, &[]);
+                            pack_frame(&mut pass);
                             pass.set_index_buffer(
                                 self.indices.slice(..),
                                 wgpu::IndexFormat::Uint32,
@@ -2954,21 +3211,29 @@ impl Renderer {
                             // As cull.rs's arm: the boxes against phase 1's depth, then
                             // phase 2 and the CPU's draws in a pass that loads both targets.
                             if let Some(gpu) = gpu.filter(|_| occluding) {
+                                if surface.is_some() {
+                                    drop(pass);
+                                    pass = plain_pass(&mut encoder);
+                                }
                                 pass.split(self.own_timing.as_mut(), "occlusion boxes");
                                 pass.stage(self.own_timing.as_mut(), "occlusion boxes");
                                 gpu.test(&mut pass);
                                 drop(pass);
                                 gpu.compact(&mut encoder, self.own_timing.as_mut());
-                                pass = world_pass_after_culling(
-                                    &mut encoder,
-                                    world_view,
-                                    world_depth,
-                                    keep_depth,
-                                    self.own_timing.as_mut(),
-                                    "World after culling",
-                                    world_pixels,
-                                );
+                                pass = match &surface {
+                                    Some(surface) => terrain_pass(&mut encoder, surface, false),
+                                    None => world_pass_after_culling(
+                                        &mut encoder,
+                                        world_view,
+                                        world_depth,
+                                        keep_depth,
+                                        self.own_timing.as_mut(),
+                                        "World after culling",
+                                        world_pixels,
+                                    ),
+                                };
                                 pass.set_bind_group(0, &self.group, &[]);
+                                pack_frame(&mut pass);
                                 pass.set_index_buffer(
                                     self.indices.slice(..),
                                     wgpu::IndexFormat::Uint32,
@@ -2994,6 +3259,23 @@ impl Renderer {
                         }
                     }
                 }
+            }
+            // `[displacement]`'s grid over the flat quads it took over, writing its depth.
+            if let Some(n) = self
+                .native
+                .as_ref()
+                .filter(|_| !frame.title && !pack_draws_terrain)
+                && let Some(d) = &n.displacement
+                && let Some(pipeline) = n.material.as_ref().and_then(|m| m.displaced.as_ref())
+            {
+                pass.stage(self.own_timing.as_mut(), "displacement");
+                pass.set_bind_group(0, &self.group, &[]);
+                pack_frame(&mut pass);
+                d.draw(&mut pass, &d.view, pipeline);
+            }
+            if surface.is_some() {
+                drop(pass);
+                pass = plain_pass(&mut encoder);
             }
             // RenderLevelStageEvent.AfterOpaqueBlocks: after solid and cutout terrain, before
             // entities.
@@ -3021,6 +3303,7 @@ impl Renderer {
                 };
                 if drew {
                     pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
             }
@@ -3276,6 +3559,7 @@ impl Renderer {
                 };
                 if drew {
                     pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
             }
@@ -3516,6 +3800,34 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.debug_line_buffer.slice(..));
                 pass.draw(0..4, debug_depth..debug_depth + debug_top);
             }
+            // One of Sunrise's own packs reads the world before translucent terrain
+            // (`opaque_depth`, `opaque_color`): the pass ends, the targets are copied, and a
+            // pass that loads both carries on.
+            if material.is_some()
+                && let Some(native) = self.native.as_ref().filter(|n| n.frame.reads_opaque)
+            {
+                drop(pass);
+                let depth = world_depth.texture();
+                encoder.copy_texture_to_texture(
+                    depth.as_image_copy(),
+                    native.frame.opaque_depth.as_image_copy(),
+                    depth.size(),
+                );
+                if let Some((color, _)) = &scaled {
+                    native.frame.copy_opaque(&self.device, &mut encoder, color);
+                }
+                pass = world_pass_after_culling(
+                    &mut encoder,
+                    world_view,
+                    world_depth,
+                    keep_depth,
+                    self.own_timing.as_mut(),
+                    "World after copy",
+                    world_pixels,
+                );
+                pass.set_bind_group(0, &self.group, &[]);
+                pack_frame(&mut pass);
+            }
             // RenderLevelStageEvent.AfterTranslucentFeatures: after translucent features, right
             // before translucent terrain (classic path).
             if world_primitives && !oit_on && !after_pack_features {
@@ -3542,6 +3854,7 @@ impl Renderer {
                 };
                 if drew {
                     pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
             }
@@ -3857,7 +4170,7 @@ impl Renderer {
                 Some(flat) => {
                     pass.split(self.own_timing.as_mut(), "translucent terrain");
                     pass.stage(self.own_timing.as_mut(), "translucent terrain");
-                    pass.set_pipeline(&flat.translucent);
+                    pass.set_pipeline(pack_flat.map_or(&flat.translucent, |p| &p.1));
                     flat.draw(
                         &mut pass,
                         flat.translucent_calls(),
@@ -3877,7 +4190,7 @@ impl Renderer {
                 None => {
                     pass.split(self.own_timing.as_mut(), "translucent terrain");
                     pass.stage(self.own_timing.as_mut(), "translucent terrain");
-                    pass.set_pipeline(&self.translucent);
+                    pass.set_pipeline(translucent_pipeline);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     let from = match &self.cull {
@@ -3921,6 +4234,7 @@ impl Renderer {
                 };
                 if drew {
                     pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
             }
@@ -4026,6 +4340,7 @@ impl Renderer {
                 };
                 if drew {
                     pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
             }
@@ -4117,7 +4432,13 @@ impl Renderer {
             pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             if !pack_draws_weather && !oit_on {
                 pass.stage(self.own_timing.as_mut(), "weather");
-                self.weather.draw(&mut pass, &self.entity_group);
+                let native_weather = self
+                    .native
+                    .as_ref()
+                    .filter(|_| !frame.title)
+                    .and_then(|n| Some((n.weather.as_ref()?, &n.frame.group)));
+                self.weather
+                    .draw(&mut pass, &self.entity_group, native_weather);
                 pass.set_bind_group(0, &self.group, &[]);
             }
             // RenderLevelStageEvent.AfterWeather: after the rain and snow this pass drew.
@@ -4145,6 +4466,7 @@ impl Renderer {
                 };
                 if drew {
                     pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
             }
@@ -4204,6 +4526,7 @@ impl Renderer {
                 pass.stage(self.own_timing.as_mut(), "polytone particles");
                 self.draw_core_particles(&mut pass);
                 pass.set_bind_group(0, &self.group, &[]);
+                pack_frame(&mut pass);
             }
             // Native mods' deferred custom geometry (`submit_custom_geometry` and debug renderers):
             // drawn at the end of the world pass before the hand, or inside `PackPost` when an
@@ -4257,6 +4580,7 @@ impl Renderer {
             frame.title,
             self.output.frame.format == LINEAR_FRAME,
             self.shader_pack_kind() == Some("iris"),
+            self.native.as_ref().map(|n| n.frame.api),
         );
         let (
             encoder,
@@ -4275,6 +4599,7 @@ impl Renderer {
                 surface_frame: surface_frame.as_ref(),
                 fg_frames: fg_frames.as_ref(),
                 pack_post,
+                native_post,
                 after_pack_sky: sky_stage == Some(SkyStageOwner::ClassicPack),
                 after_pack_features,
                 after_pack_custom_geometry,

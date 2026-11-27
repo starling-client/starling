@@ -6,11 +6,11 @@ use super::*;
 pub(super) struct FrameAttempt<K = FrameKey>(Option<K>);
 
 /// The frame the renderer would be made with (`Renderer::requested_frame`), the pick's path,
-/// whether the loader accepted it, and its HDR request (`PickedPack::hdr`).
+/// the loader's outcome for it, and its HDR request (`PickedPack::hdr`).
 type FrameKey = (
     Option<sunrise_client::gfx::FrameConfiguration>,
     PathBuf,
-    Option<bool>,
+    Option<Option<sunrise_shader_api::Api>>,
     Option<sunrise_shaders::Tonemap>,
 );
 
@@ -21,12 +21,12 @@ fn look_again<C: PartialEq>(
     attempts: &mut FrameAttempt<(
         Option<C>,
         PathBuf,
-        Option<bool>,
+        Option<Option<sunrise_shader_api::Api>>,
         Option<sunrise_shaders::Tonemap>,
     )>,
     wanted: Option<C>,
     path: PathBuf,
-    outcome: Option<bool>,
+    outcome: Option<Option<sunrise_shader_api::Api>>,
     hdr: Option<sunrise_shaders::Tonemap>,
 ) -> bool {
     attempts.changed((wanted, path, outcome, hdr))
@@ -89,17 +89,19 @@ impl Game<'_> {
             return;
         }
         let picked = shader_packs::picked_pack(&self.settings);
-        let dir = Self::shader_packs_dir();
-        let path = dir.join(picked);
+        let path = self.native_shaders.resolve_path(
+            &Self::shader_packs_dir(),
+            picked,
+            shader_packs::dev_pack().is_some(),
+        );
         let available = path.exists()
-            && !sunrise_client::shader_pack_list::unsupported(&dir, picked)
             && path.file_name().is_none_or(|f| {
                 !shader_packs::active_pack(&f.to_string_lossy(), &self.settings.mods).is_empty()
             });
         let outcome = if available {
             native_shaders::outcome(&path)
         } else {
-            Some(false)
+            Some(None)
         };
         // The renderer's offer can change while the game runs (Vulkan's formats follow desktop
         // HDR and the window's output), and the frame with it.
@@ -311,6 +313,9 @@ impl Game<'_> {
             let context = self.worker_context();
             self.streaming.reload_resources(&mut self.world, context);
         }
+        self.native_shaders = native_shaders::NativeShaders::picking(&std::mem::take(
+            &mut self.native_shaders.picked,
+        ));
         self.apply_ui_settings();
     }
 
@@ -331,6 +336,7 @@ mod tests {
     use super::{FrameAttempt, look_again};
     use crate::game::shader_packs::reconcile_pack_hdr;
     use std::path::PathBuf;
+    use sunrise_shader_api::Api;
     use sunrise_shaders::Tonemap;
 
     /// Same frame, pick and loader outcome; only the pick's tone curve owner changes: the frame
@@ -340,8 +346,15 @@ mod tests {
         let mut attempts = FrameAttempt::default();
         let path = PathBuf::from("pack");
         let mut installed = Some(Tonemap::Pack);
-        let mut look =
-            |hdr| look_again(&mut attempts, Some("8-bit"), path.clone(), Some(true), hdr);
+        let mut look = |hdr| {
+            look_again(
+                &mut attempts,
+                Some("8-bit"),
+                path.clone(),
+                Some(Some(Api::V0_1)),
+                hdr,
+            )
+        };
         assert!(look(Some(Tonemap::Pack)));
         assert!(!look(Some(Tonemap::Pack)));
         assert!(look(Some(Tonemap::Sunrise)));
@@ -365,10 +378,10 @@ mod tests {
             ("8-bit", "p", None),
             // HDR output offered later, with HDR On: the frame is looked at again.
             ("float", "p", None),
-            ("float", "p", Some(true)),
-            ("float", "p", Some(true)),
-            ("float", "p", Some(false)),
-            ("float", "p", Some(false)),
+            ("float", "p", Some(Some(Api::V0_2))),
+            ("float", "p", Some(Some(Api::V0_2))),
+            ("float", "p", Some(None)),
+            ("float", "p", Some(None)),
             ("float", "q", None),
             ("8-bit", "q", None),
         ] {

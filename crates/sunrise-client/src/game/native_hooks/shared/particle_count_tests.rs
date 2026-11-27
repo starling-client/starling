@@ -272,7 +272,7 @@ impl mod_api::Hooks for FrameMod {
     }
 }
 
-// A real renderer supplies the GPU skinning path.
+// A real renderer supplies the native pack's rules and the GPU skinning path.
 // The test consumer inspects the exact Frame passed to Renderer::render, without
 // comparing pixels or bypassing any GUI, model, hand, fog or extraction callbacks.
 fn with_frame_scene(
@@ -481,8 +481,8 @@ fn fog_clear_reaches_the_complete_frame_consumer() {
 
 #[test]
 #[ignore = "daily"]
-fn late_clear_rolls_back_particle_geometry_at_the_frame_consumer() {
-    let name = "game::native_hooks::particle_count_tests::late_clear_rolls_back_particle_geometry_at_the_frame_consumer";
+fn late_clear_removes_native_particle_lights_at_the_frame_consumer() {
+    let name = "game::native_hooks::particle_count_tests::late_clear_removes_native_particle_lights_at_the_frame_consumer";
     if super::super::native_entity_refs::tests::run_fresh_cases(
         name,
         "SUNRISE_PARTICLE_LIGHT_CHILD",
@@ -496,9 +496,51 @@ fn late_clear_rolls_back_particle_geometry_at_the_frame_consumer() {
         ClearAt::Model
     };
     with_frame_scene(|game, at, calls| {
+        let manifest = br#"schema = 1
+id = "particle_frame"
+name = "Particle Frame"
+version = "1.0.0"
+api = "0.1"
+[material]
+file = "material.wgsl"
+[[particle_lights]]
+particles = ["flame"]
+color = [1.0, 0.0, 0.0]
+reach = 4.0
+[[lights]]
+blocks = ["minecraft:torch"]
+color = [0.0, 1.0, 0.0]
+"#;
+        let pack = sunrise_shader_api::Pack::from_files(std::collections::BTreeMap::from([
+            (sunrise_shader_api::MANIFEST.into(), manifest.to_vec()),
+            (
+                "material.wgsl".into(),
+                b"fn material(input: MaterialInput) -> Surface { return Surface(input.albedo); }"
+                    .to_vec(),
+            ),
+        ]))
+        .unwrap();
+        let report = sunrise_shader_api::check(&pack).unwrap();
+        game.renderer
+            .as_mut()
+            .unwrap()
+            .set_native_shader_pack(Some((
+                report,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Default::default(),
+            )))
+            .unwrap();
         let mut baseline = None;
         game.render_with(|_, frame| {
-            assert_eq!(frame.colored_lights.len(), 1, "the mod's light");
+            assert_eq!(frame.colored_lights.len(), 2, "item and mod light");
+            assert!(
+                frame
+                    .colored_lights
+                    .iter()
+                    .any(|l| l[1] == [0.0, 1.0, 0.0, 1.0])
+            );
             assert!(
                 frame
                     .colored_lights
@@ -512,10 +554,16 @@ fn late_clear_rolls_back_particle_geometry_at_the_frame_consumer() {
         let baseline = baseline.unwrap();
         add_frame_particles(game);
         game.render_with(|_, frame| {
-            assert_ne!(
-                frame_geometry(frame),
-                baseline.0,
-                "live particles reach the consumer"
+            assert_eq!(
+                frame.colored_lights.len(),
+                sunrise_client::dynamic_light::MAX
+            );
+            assert!(
+                frame
+                    .colored_lights
+                    .iter()
+                    .all(|l| l[1] == [1.0, 0.0, 0.0, 1.0]),
+                "nearby flames displace unrelated lights before clearing"
             );
             Ok(true)
         })
@@ -525,7 +573,7 @@ fn late_clear_rolls_back_particle_geometry_at_the_frame_consumer() {
             assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
             assert_eq!(
                 frame.colored_lights, baseline.1,
-                "the mod's light survives the clear"
+                "cleared flames contribute no light; item/mod lights restored"
             );
             assert_eq!(
                 frame_geometry(frame),

@@ -99,14 +99,14 @@ lets it take `sunrise-client-lib` until the types it needs move down, and only e
 What makes vanilla nicer to change, port and run, with no Sunrise branding and no address of its own. It is the
 public API that mods, desktop-class ports and the Sunrise layer build on.
 
-- **Belongs:** the mod API and mod formats, the native mod host, shader pack formats beyond vanilla
+- **Belongs:** the mod API and mod formats, the native mod host, the shader API and pack formats beyond vanilla
   (OptiFine, Polytone, `shaders/`), HDR, controllers, replay recording and playback, the HUD widget
   framework, UI pages and the settings system, agent control (`sunrise-ctl`, MCP),
   modpack porting, the design tokens of non-vanilla screens.
 - **Exposes what vanilla already uses.** FOV changes, potion effects, the player's state, screens, rendering
   hooks and so on become public API with stable types (arismoko/horizon#1608's patterns). Then a mod, a port or a
   Sunrise feature builds on them instead of editing or copying engine code.
-- **Examples:** `sunrise-shaders`, `sunrise-optifine` (`cem/`), `sunrise-polytone`,
+- **Examples:** `sunrise-shader-api`, `sunrise-shaders`, `sunrise-optifine` (`cem/`), `sunrise-polytone`,
   `sunrise-hdr`, `sunrise-dualsense`, `sunrise-mods`, `sunrise-mcp`,
   `sunrise-theme`. Still in engine crates today: `game/mod_api_host.rs`, `game/native_*.rs`, `shader_ui.rs`,
   `hdr_calibration.rs`.
@@ -675,6 +675,11 @@ The current dependency inventory is in `tools/layers.json`, with fork-specific c
 `_fork_baselines`. It records existing fork dependencies and the restored upstream Horizon layer dependencies. The separate launcher and registry workspaces take two engine crates: `sunrise-mod-package` (the launcher's
 package, modpack and index reads; the registry's index format) and `sunrise-system` (the launcher's bug reports).
 Those three edges are `allowed` rows like the launcher's other engine dependencies.
+
+`sunrise-mod-package`'s registry index validates shader packages with `sunrise-shader-api`, behind the optional
+`index` feature (the portable crates take `sunrise-mod-package` without it). That edge is the one `optional` row:
+it excuses the layer check and the portable check only while the dependency stays optional, so making it mandatory
+fails both.
 
 ## Built-in addresses
 

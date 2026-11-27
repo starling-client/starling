@@ -119,6 +119,7 @@ sunrise-relay	test:tunnel	relayed_bandwidth_is_capped	crates/sunrise-relay/tests
 sunrise-relay	test:tunnel	wrong_secrets_fail	crates/sunrise-relay/tests/tunnel.rs:268	slow
 sunrise-server	lib	lists::tests::edits_the_lists_while_stopped	crates/sunrise-server/src/lists.rs:392	slow
 sunrise-server	lib	management::tests::the_heartbeat_interval_can_change_while_the_server_runs	crates/sunrise-server/src/management.rs:1081	slow
+sunrise-shader-api	test:package_limits	a_package_over_the_total_is_refused_while_it_is_read	crates/sunrise-shader-api/tests/package_limits.rs:27	slow
 sunrise-shaders	lib	post::tests::higher_shadowcolor_gives_shadow_programs_eight_buffers	crates/sunrise-shaders/src/post.rs:2824	slow
 sunrise-shaders	lib	post::tests::shadow_programs_load_when_a_shadow_buffer_is_read	crates/sunrise-shaders/src/post.rs:2677	slow
 sunrise-shaders	lib	post::tests::water_falls_back_to_terrain_and_blends	crates/sunrise-shaders/src/post.rs:3337	slow

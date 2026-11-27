@@ -5,7 +5,7 @@ use super::{Frustum, SectionKey};
 use crate::fast_hash::FxHashMap;
 use glam::{DVec3, Mat4, Vec3, Vec4};
 
-pub use sunrise_render_core::{Cull, JoinedFrusta};
+pub use sunrise_render_core::{Cull, Frusta, JoinedFrusta};
 /// A shader pack's shadow camera's box, and with `casters` only what can shade the camera's view
 /// (`shadow_casters`): a box must meet all of them.
 #[derive(Clone, Copy, Debug)]

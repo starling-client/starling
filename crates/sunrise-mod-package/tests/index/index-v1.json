@@ -78,6 +78,37 @@
       "description": "Coordinates HUD with a calm render distance, played together as one profile."
     },
     {
+      "id": "glow",
+      "kind": "shader",
+      "name": "Soft Glow",
+      "summary": "A post-processing pass over the world.",
+      "authors": [
+        "Sunrise"
+      ],
+      "owners": [
+        "ludovic111"
+      ],
+      "license": "MIT",
+      "source": "https://github.com/horizon-rust/horizon-mods",
+      "icon": "https://horizon-rust.github.io/horizon-mods/icons/glow.png?v=565b7c33f72f",
+      "categories": ["bloom"],
+      "versions": [
+        {
+          "version": "1.0.0",
+          "published": "2026-10-26",
+          "api": "0.1",
+          "game": "26.3",
+          "file": {
+            "name": "glow-1.0.0.sshader",
+            "url": "https://github.com/sunrise-org/sunrise-mods/releases/download/glow-1.0.0/glow-1.0.0.sshader",
+            "size": 693,
+            "sha256": "a23c5fe9fd173243704dd51160f20f35927c6e0060c5541ce1823f25db8c7961"
+          }
+        }
+      ],
+      "description": "A soft bloom drawn over the world after it renders, in Sunrise's own shader format."
+    },
+    {
       "id": "skyblock_start",
       "kind": "world",
       "name": "Skyblock start",

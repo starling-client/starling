@@ -12,7 +12,7 @@ Its source files and fields are specified in the registry's
 [`docs/registry-v2.md`](https://github.com/sunrise-org/sunrise-mods/blob/main/docs/registry-v2.md).
 
 The old index lists content and native mods (`.smod`), modpacks (`.spack`), resource packs, data packs,
-and shaders-folder packs. Reviewed versions are pinned by SHA-256;
+shaders-folder packs and Sunrise shader packs (`.sshader`). Reviewed versions are pinned by SHA-256;
 the format also supports unreviewed Nightly source listings. The formats are defined by
 `sunrise_mod_package::index` and `sunrise_mod_package::modpack`.
 
@@ -53,7 +53,7 @@ takes precedence; this file fills fields the entry leaves out.
 | `nightly_build` | Optional current game Nightly: `{ commit, date }`, separate from each project's `nightly` source. `date` is `YYYY-MM-DD` (UTC). |
 | `unjudged` | Optional top-level list of builds skipped during [fit checks](#fit-on-stable-and-nightly): `{ build, reason }`, where `build` is a stable tag or `nightly`. |
 | `collections` | Optional top-level list of [collections](#collections). Each is a page and a list of already listed mod ids, with no file or version of its own. |
-| `kind` | `mod` (content), `native-mod`, `modpack`, `resourcepack`, `shaderpack` (a `shaders/`-folder zip), `datapack` (a data-pack zip). Other kinds (worlds, themes) may come without a new schema: a reader keeps a kind it doesn't know and doesn't offer it. The retired kind `shader` (Sunrise's `.sshader` format) is the exception: a reader leaves such a project out with a note in `left_out`, and the registry refuses a submission of it like any kind it doesn't take. |
+| `kind` | `mod` (content), `native-mod`, `modpack`, `resourcepack`, `shader` (Sunrise `.sshader`), `shaderpack` (a `shaders/`-folder zip), `datapack` (a data-pack zip). Other kinds (worlds, themes) may come without a new schema: a reader keeps a kind it doesn't know and doesn't offer it. |
 | `summary`, `description` | Required summary of at most 160 characters for lists. Markdown for the project's page: required for a project with versions (50–10,000 characters after trimming), optional for a Nightly-only project. |
 | `owners` | GitHub logins allowed to publish updates. |
 | `license`, `source` | An SPDX expression and an `https://` address of the source code: required for a project with versions. A Nightly-only project can omit both; in that case the publisher uses the Nightly repository's URL as `source`. |
@@ -74,7 +74,7 @@ takes precedence; this file fills fields the entry leaves out.
 | `verdicts` | Optional version-level [fit decisions](#fit-on-stable-and-nightly), keyed by stable release tag or `nightly`. Only content and native mods with `sunrise` get these decisions. |
 | `dependencies` | A mod or native mod's [manifest dependencies](../concepts/dependencies.md): `{ id, version, optional, side }`, sorted by `id`. `version` is a SemVer range rendered as text. `optional` is omitted unless true; `side` is omitted unless limited to `client` or `server`. The publisher omits this field when a mod has no dependencies. An explicit `[]` asserts that the manifest has none. Never add this field to `mods/<id>.toml`. |
 | `requires` | A modpack's exact pins: `{ id, version, sha256 }`, each a version in this index with that hash. These are not mod dependencies. |
-| `file` | A plain name with the kind's extension (`.smod`, `.spack`, `.zip`), an `https://` URL (the registry's release `https://github.com/sunrise-org/sunrise-mods/releases/download/<id>-<version>/<name>`, or an asset of the project's own repository, `https://github.com/<owner>/<repo>/releases/download/<tag>/<name>`: the launcher accepts exactly these shapes), the size (at most 64 MiB), the lowercase hex SHA-256, and the `.minisig` text when the project has a key. |
+| `file` | A plain name with the kind's extension (`.smod`, `.spack`, `.zip`, `.sshader`), an `https://` URL (the registry's release `https://github.com/sunrise-org/sunrise-mods/releases/download/<id>-<version>/<name>`, or an asset of the project's own repository, `https://github.com/<owner>/<repo>/releases/download/<tag>/<name>`: the launcher accepts exactly these shapes), the size (at most 64 MiB), the lowercase hex SHA-256, and the `.minisig` text when the project has a key. |
 | `revoked` | Files taken down: one file by `sha256`, or every version of `id` without it. The launcher refuses to install them and turns installed copies off with the reason. A takedown of every version also stops listing the project's Nightly source; one by `sha256` leaves it. |
 
 Readers ignore fields they don't know, so an optional field can be added to schema 1. Renaming or removing a field, or
@@ -211,7 +211,8 @@ per-version native fit decisions, and an expected plan or refusal details.
 3. What the file says matches the entry: a mod's `sunrise-mod.toml` (id, version, API, side, capabilities, and
    dependencies when listed) and its content's fence ([making a content mod](../how-to/content-mods.md#content-mods-api-02)); for code, the same manifest's `[native]`
    (game, the exact Sunrise and horizon-mixins revisions) and checked root Cargo project; a modpack's manifest (id, version, format, game,
-   mods); a resource pack's `pack.mcmeta`; a shader pack's `shaders/` folder.
+   mods); a resource pack's `pack.mcmeta`; a shader pack's `sunrise_shader_api::check` and manifest (id, version,
+   shader API).
 4. A kind this build can't install is refused with "this Sunrise can't install a … yet".
 
 An absent `dependencies` field makes no claim about the package's dependencies: an older schema 1 index may omit
@@ -277,7 +278,7 @@ row while the project entry stays).
 
 ```toml
 id = "coords_hud"
-kind = "mod"                  # mod, native-mod, modpack, resourcepack, shaderpack, datapack
+kind = "mod"                  # mod, native-mod, modpack, resourcepack, shader, shaderpack, datapack
 name = "Coordinates HUD"
 summary = "Shows where you are."                          # at most 160 characters
 description = "Markdown for the project's page, 50 to 10,000 characters."
@@ -327,7 +328,7 @@ A `[[versions]]` row with `sunrise` must set `file` to the author's release asse
 `https://github.com/you/example/releases/download/v0.1.0/example-0.1.0.smod`. Use the project's own
 GitHub repository (`source`, or `repo` if `source` is omitted), one plain tag segment, and the exact
 `<id>-<version>.<extension>` asset name: the row's `version`, a full SemVer, and the extension of
-the project's kind (`.smod`, `.spack`, `.zip`). The row's version must agree with the package's
+the project's kind (`.smod`, `.spack`, `.zip`, `.sshader`). The row's version must agree with the package's
 own where the format carries one. A bare filename is refused
 on a stable row. The URL is immutable after publication, just like the source pin and digest.
 The registry checks the bytes from `files/<sha256>`; the generated index still points to the package

@@ -586,6 +586,7 @@ pub(crate) struct CloudsFrame {
     pub pack_shader: bool,
     pub pack_oit_shader: bool,
     pub clouds: bool,
+    pub native_clouds: bool,
     pub improved_transparency: bool,
     pub shader_pack: bool,
     pub title: bool,
@@ -599,14 +600,19 @@ impl CloudsFrame {
         } else {
             self.pack_shader
         };
-        shader && self.clouds && !self.shader_pack && !self.title && !self.cloud_marks
+        shader
+            && self.clouds
+            && self.native_clouds
+            && !self.shader_pack
+            && !self.title
+            && !self.cloud_marks
     }
 }
 
 /// Whether the native mesh is prepared this frame (`draw_frame`): the clouds are the game's own,
 /// and no pack's faces were prepared in its place.
-pub(crate) fn native_mesh(pack_quads: Option<u32>) -> bool {
-    pack_quads.is_none()
+pub(crate) fn native_mesh(native_clouds: bool, pack_quads: Option<u32>) -> bool {
+    native_clouds && pack_quads.is_none()
 }
 
 /// Whether the classic world pass draws `quads` clouds, a pack's or the native mesh's: not where

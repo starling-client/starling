@@ -66,7 +66,7 @@ pub(super) fn overlay_format(
 }
 
 /// Whether Sunrise's tone curve (`Hdr::tonemap`) runs on this frame: on the layered frame's
-/// world.
-pub(super) fn sunrise_tone_curve(layered: bool, world: bool) -> bool {
-    layered && world
+/// world, unless a 0.2 pack's `[tonemap]` already mapped it. One tone mapping, never two.
+pub(super) fn sunrise_tone_curve(layered: bool, world: bool, pack_tonemap: bool) -> bool {
+    layered && world && !pack_tonemap
 }

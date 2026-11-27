@@ -66,7 +66,7 @@ cargo sunrise-mod check             # validate the project before release
   It also checks for blockstates on blocks with `render_shape` set to `MODEL` and warns about missing local loot
   tables, item definitions or English names, or registry content on a client-only package. Reference diagnostics name
   the source file, the relevant field or member index, and the ID.
-- `check <file>` reads `.smod`, `.spack` and resource pack `.zip` files. A `.smod` also
+- `check <file>` reads `.smod`, `.spack`, resource pack `.zip` and `.sshader` files. A `.smod` also
   needs its [release attestation](../reference/sdk/05-commands.md#check-a-released-package).
 - To release a mod to the registry, follow [Publishing your mod](publish.md).
 - `use-jar <path | modrinth-url | <project> <version>>` records and caches an original Java jar as an external

@@ -679,26 +679,16 @@ fn the_frame_reads_the_eye_light_in_first_and_third_person() {
     with_client_game(|game| {
         let _event_loop = crate::game::native_hooks::particle_count_tests::frame_scene(game);
         game.screen = crate::game::Screen::Playing;
-        // The view's uniforms are worked out while a pack is picked: a `shaders/` pack with
-        // one program. The first frame turns the resource packs' material maps on and reloads
-        // them, and the next loads the pack.
+        // The view's uniforms are worked out while a pack is picked: an empty Sunrise pack.
         let packs = tempfile::tempdir().unwrap();
         let pack = packs.path().join("eye_light");
-        let shaders = pack.join("shaders");
-        std::fs::create_dir_all(&shaders).unwrap();
+        std::fs::create_dir_all(&pack).unwrap();
         std::fs::write(
-            shaders.join("gbuffers_terrain.vsh"),
-            "#version 120\nvoid main() {\n    gl_Position = ftransform();\n}\n",
-        )
-        .unwrap();
-        std::fs::write(
-            shaders.join("gbuffers_terrain.fsh"),
-            "#version 120\nvoid main() {\n    gl_FragData[0] = vec4(1.0);\n}\n",
+            pack.join(sunrise_shader_api::MANIFEST),
+            "schema = 1\nid = \"eye_light\"\nname = \"Eye light\"\nversion = \"1\"\napi = \"0.1\"\n",
         )
         .unwrap();
         game.settings.sunrise.shader_pack = pack.to_string_lossy().into_owned();
-        framed(game);
-        framed(game);
         for camera_type in [CameraType::FirstPerson, CameraType::ThirdPersonBack] {
             game.apply_camera_type(camera_type);
             let (camera, eye, _) = framed(game);

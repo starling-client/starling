@@ -11,6 +11,7 @@ See [stability and versioning](stability.md) for how to read the stability label
 | [Launcher](launcher.md) | Manage installations and play through the `sunrise-launcher` CLI or MCP. | [Launcher commands](https://github.com/sunrise-org/sunrise-launcher/blob/main/docs/launcher-commands.md) |
 | [Launch](launch.md) | Integrate another launcher with `sunrise-prepare` and `sunrise-client`: resource preparation, launch options, session data, and exit codes. | [Launch guide](launch-guide.md), [Launch reference](launch-reference.md) |
 | [Data formats](data-formats.md) | Read files such as benchmark reports, server settings, and signed release checksums. | Format links and version fields on that page |
+| [Shaders](shaders.md) | Write WGSL shader packs against Sunrise's renderer stages. | [Shader pack reference](shaders-reference.md) |
 
 ## How these APIs are designed
 

@@ -22,6 +22,11 @@ impl Renderer {
         self.flat_on = on;
         Ok(())
     }
+    /// Whether one of Sunrise's own packs reads the water mirror, which needs the frame's
+    /// `water_plane`.
+    pub fn wants_water_plane(&self) -> bool {
+        self.native.as_ref().is_some_and(|n| n.frame.reflects)
+    }
     /// Whether solid quads facing away from the eye are left out.
     pub fn section_sides(&self) -> bool {
         self.sides_on
@@ -306,6 +311,26 @@ impl Renderer {
     }
     pub fn section_count(&self) -> usize {
         self.sections.len()
+    }
+    /// Whether the running native pack gives any block a `[[lights]]` colour.
+    pub fn has_light_colors(&self) -> bool {
+        self.native
+            .as_ref()
+            .is_some_and(|native| !native.light_colors.is_empty())
+    }
+    /// The running native pack's `[[lights]]` colour of the block `name`.
+    pub fn light_color(&self, name: &str) -> Option<[f32; 3]> {
+        let native = self.native.as_ref()?;
+        sunrise_shader_api::manifest::light_color(&native.light_colors, name)
+    }
+    /// The running native pack's `[[particle_lights]]`.
+    pub fn particle_lights(&self) -> Option<&[sunrise_shader_api::manifest::ParticleLight]> {
+        self.native.as_ref().map(|n| n.particle_lights.as_slice())
+    }
+    /// Whether one of Sunrise's own packs with `[shadow]` draws, whose shadow pass takes the
+    /// frame's `shadow_only` quads.
+    pub fn native_shadow(&self) -> bool {
+        self.native.as_ref().is_some_and(|n| n.shadow.is_some())
     }
     /// What a shader pack's shadow pass draws of the entities this frame: (entities or block
     /// entities other than the player, so those Sunrise's culling hides from the camera are

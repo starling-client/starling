@@ -132,13 +132,16 @@ impl Renderer {
         }
         let report = post.as_ref().map(pack_post::PackPost::report);
         self.pack_post = Some((dimension, post));
+        if self.pack_post.as_ref().is_some_and(|p| p.1.is_some()) {
+            self.native = None;
+        }
         Ok(report)
     }
     /// Sets the external shader pipeline world frames call (`external`), or none.
     pub fn set_external_pipeline(&mut self, pipeline: Option<Box<dyn external::ExternalPipeline>>) {
         self.external = pipeline;
     }
-    /// Makes the running shader pack forget what it kept from earlier frames:
+    /// Makes the running shader pack, of either kind, forget what it kept from earlier frames:
     /// the next frame draws as a freshly loaded pack's first. Nothing to do without a pack.
     pub fn reset_shader_pack_history(&mut self) {
         // A frame still on the submit thread uses the targets and readbacks replaced
@@ -149,6 +152,12 @@ impl Renderer {
         }
         if let Some((_, Some(post))) = &mut self.pack_post {
             post.reset_history(&self.device);
+        }
+        if let Some(native) = &mut self.native {
+            native.frame.reset_history();
+            if let Some(post) = &mut native.post {
+                post.reset_history();
+            }
         }
     }
     /// Counts a shader pack loaded, switched or turned off (`ShaderPackState::generation`).
@@ -183,10 +192,12 @@ impl Renderer {
             _ => &[],
         }
     }
-    /// The running shader pack's kind: `iris` (a `shaders/` pack).
+    /// The running shader pack's kind: `iris` (a `shaders/` pack) or `native` (one of
+    /// Sunrise's own).
     pub fn shader_pack_kind(&self) -> Option<&'static str> {
-        match &self.pack_post {
-            Some((_, Some(_))) => Some("iris"),
+        match (&self.pack_post, &self.native) {
+            (Some((_, Some(_))), _) => Some("iris"),
+            (_, Some(_)) => Some("native"),
             _ => None,
         }
     }
@@ -388,11 +399,12 @@ impl Renderer {
         let report = self.install_shader_pack(loading.dimension, built.map(Some), block_ids);
         Some((loading.dimension, loading.label, loading.started, report))
     }
-    /// Drops the running shader pack.
+    /// Drops the running shader pack, of either kind.
     pub fn drop_shader_packs(&mut self) {
         self.pack_loading = None;
         self.pack_changed();
         self.pack_post = None;
+        self.native = None;
         self.pack_atlas = None;
         self.separate_ao = false;
         self.pack_block_ids = None;
@@ -409,6 +421,63 @@ impl Renderer {
     /// Lava's sprite layers (still and flowing), whose faces a pack's solid terrain draws.
     pub fn set_pack_lava_layers(&mut self, layers: Vec<u16>) {
         self.pack_lava_layers = layers;
+    }
+    /// Runs the sky, material and post stages of one of Sunrise's own shader packs from now
+    /// on (`None`: no pack), with its options' values; replaces a `shaders/` pack. Returns the
+    /// stages' labels; on an error the pack that ran keeps running.
+    pub fn set_native_shader_pack(
+        &mut self,
+        pack: Option<(
+            sunrise_shader_api::Report,
+            Vec<(String, f64)>,
+            Vec<(u32, u32)>,
+            Vec<(u32, u32)>,
+            block_light::LightTable,
+        )>,
+    ) -> std::result::Result<Vec<String>, String> {
+        let linear = pack
+            .as_ref()
+            .is_some_and(|p| p.0.manifest.api == sunrise_shader_api::Api::V0_2);
+        if (linear || self.output.frame.format == LINEAR_FRAME)
+            && linear != (self.output.frame.format == LINEAR_FRAME)
+            && !std::mem::replace(&mut self.frame_kept_logged, true)
+        {
+            log::info!(
+                "Sunrise renderer: the {:?} frame stays until the renderer is made again; a shader pack picked or dropped since runs on it",
+                self.output.frame.format
+            );
+        }
+        let Some((report, constants, sprite_tags, sprite_materials, lights)) = pack else {
+            self.native = None;
+            return Ok(Vec::new());
+        };
+        let terrain = native_material::TerrainShape {
+            globals: &self.terrain_layout,
+            flat: self.flat.as_ref().map(|f| &f.draw_layout),
+            sprites: self.terrain_sprites,
+            format: self.output.frame.format,
+            linear: self.output.frame.linear_light,
+            sprite_tags: &sprite_tags,
+            sprite_materials: &sprite_materials,
+            entities: &self.entity_bindings,
+            weather_groups: [&self.weather.entity_layout, &self.weather.time_layout],
+            pbr: self.pbr_maps.as_ref().and_then(|arrays| arrays.first()),
+        };
+        let (pack, labels) = native_pack::NativePack::new(
+            &self.device,
+            &self.queue,
+            &terrain,
+            report,
+            &constants,
+            lights,
+        )?;
+        self.native = pack.draws().then_some(pack);
+        if self.native.is_some() {
+            self.pack_post = None;
+            self.pack_atlas = None;
+            self.pack_material_atlases = None;
+        }
+        Ok(labels)
     }
     /// What a shader pack's gbuffers programs read from Sunrise's geometry: the sky's, and
     /// terrain's in the pack's block atlas (made here when missing; none when it does not fit).

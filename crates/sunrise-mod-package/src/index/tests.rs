@@ -1,7 +1,8 @@
 //! The sample index (`tests/index/index-v1.json`, the one docs/modding/src/reference/registry-index.md
 //! shows) and its files: `coords_hud-0.1.0.smod`, signed with the throwaway
 //! key `test.pub` (Ed25519/Blake2b via OpenSSL; its private key was deleted),
-//! and `cozy-1.0.0.spack`, unsigned.
+//! `cozy-1.0.0.spack`, unsigned, and `glow-1.0.0.sshader`, unsigned
+//! (`sunrise-shader new --template post`, then `sunrise-shader pack`).
 use super::*;
 use std::path::PathBuf;
 
@@ -25,8 +26,8 @@ fn reads_the_sample_and_keeps_unknown_kinds() {
     let index = sample();
     assert_eq!(index.schema, SCHEMA);
     let kinds: Vec<&str> = index.projects.iter().map(|p| p.kind.name()).collect();
-    assert_eq!(kinds, ["mod", "modpack", "world"]);
-    assert_eq!(index.projects[2].kind, Kind::Other("world".into()));
+    assert_eq!(kinds, ["mod", "modpack", "shader", "world"]);
+    assert_eq!(index.projects[3].kind, Kind::Other("world".into()));
     let hud = index.project("coords_hud").unwrap();
     assert_eq!(
         hud.versions[0].capabilities.known(),
@@ -79,6 +80,8 @@ fn files_pass_against_their_entries() {
     assert_eq!(check(&index, "coords_hud", &smod), Ok(Trust::Verified));
     let spack = fixtures().join("cozy-1.0.0.spack");
     assert_eq!(check(&index, "cozy", &spack), Ok(Trust::Unsigned));
+    let sshader = fixtures().join("glow-1.0.0.sshader");
+    assert_eq!(check(&index, "glow", &sshader), Ok(Trust::Unsigned));
     let world = index.project("skyblock_start").unwrap();
     let e = check_file(&index, world, &world.versions[0], &spack).unwrap_err();
     assert!(e.contains("bytes"), "{e}");
@@ -411,7 +414,7 @@ fn with_hnmod() -> Index {
 fn a_project_with_no_usable_version_is_left_out_and_the_rest_loads() {
     let index = reread(&with_hnmod());
     let ids: Vec<&str> = index.projects.iter().map(|p| p.id.as_str()).collect();
-    assert_eq!(ids, ["coords_hud", "cozy", "skyblock_start"]);
+    assert_eq!(ids, ["coords_hud", "cozy", "glow", "skyblock_start"]);
     let reasons: Vec<(&str, Option<&str>)> = index
         .left_out
         .iter()
@@ -538,7 +541,7 @@ fn a_modpack_whose_mod_was_left_out_is_left_out_too() {
     let index = reread(&index);
     assert!(index.project("coords_hud").is_none());
     assert!(index.project("cozy").is_none());
-    assert!(index.project("skyblock_start").is_some());
+    assert!(index.project("glow").is_some());
     let cozy = index.left_out.iter().find(|l| l.id == "cozy").unwrap();
     assert!(cozy.reason.contains("not in the index"), "{}", cozy.reason);
 }
@@ -549,7 +552,7 @@ fn an_id_listed_twice_leaves_out_both() {
     let twin = index.projects[2].clone();
     index.projects.push(twin);
     let index = reread(&index);
-    assert!(index.project("skyblock_start").is_none());
+    assert!(index.project("glow").is_none());
     let twice = index
         .left_out
         .iter()
@@ -680,40 +683,78 @@ fn the_newest_unrevoked_version_for_this_game_is_installed() {
 }
 
 #[test]
-fn a_project_of_the_retired_shader_kind_is_left_out_with_a_reason() {
-    let text = std::fs::read_to_string(fixtures().join("index-v1.json")).unwrap();
-    let listed = text.replacen(
-        "\"projects\": [",
-        r#""projects": [{
-          "id": "glow", "kind": "shader", "name": "Soft Glow", "summary": "A soft glow.", "license": "MIT",
-          "source": "https://github.com/sunrise-org/sunrise-mods",
-          "versions": [{
-            "version": "1.0.0", "api": "0.1", "game": "26.3",
-            "file": {
-              "name": "glow-1.0.0.sshader",
-              "url": "https://github.com/sunrise-org/sunrise-mods/releases/download/glow-1.0.0/glow-1.0.0.sshader",
-              "size": 693,
-              "sha256": "a23c5fe9fd173243704dd51160f20f35927c6e0060c5541ce1823f25db8c7961"
-            }
-          }]
-        },"#,
-        1,
+fn shader_packs_pass_the_game_s_own_check() {
+    let manifest = "schema = 1\nid = \"glow\"\nname = \"Glow\"\nversion = \"1.0.0\"\napi = \"0.1\"\n\
+                    [[post]]\nfile = \"post.wgsl\"\n";
+    let pack = |post: &str| {
+        let files = [
+            (sunrise_shader_api::MANIFEST, manifest),
+            ("post.wgsl", post),
+        ]
+        .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+        .into();
+        sunrise_shader_api::Pack::from_files(files)
+            .unwrap()
+            .package()
+            .unwrap()
+    };
+    let dir = std::env::temp_dir().join(format!("sunrise-mods-shader-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let good = dir.join("glow-1.0.0.sshader");
+    std::fs::write(
+        &good,
+        pack("fn post(input: PostInput) -> vec4<f32> { return input.color; }\n"),
+    )
+    .unwrap();
+    let bad = dir.join("bad.sshader");
+    std::fs::write(
+        &bad,
+        pack("fn post(input: PostInput) -> vec4<f32> { return input.color }\n"),
+    )
+    .unwrap();
+    let experimental = dir.join("glow-0.2.sshader");
+    let files = [
+        (
+            sunrise_shader_api::MANIFEST,
+            manifest.replace("api = \"0.1\"", "api = \"0.2\""),
+        ),
+        (
+            "post.wgsl",
+            "fn post(input: PostInput) -> vec4<f32> { return input.color; }\n".into(),
+        ),
+    ]
+    .map(|(n, t)| (n.to_owned(), t.into_bytes()))
+    .into();
+    let bytes = sunrise_shader_api::Pack::from_files(files)
+        .unwrap()
+        .package()
+        .unwrap();
+    std::fs::write(&experimental, bytes).unwrap();
+    let experimental = inspect(&Kind::Shader, &experimental).unwrap_err();
+    let facts = inspect(&Kind::Shader, &good);
+    let refused = inspect(&Kind::Shader, &bad).unwrap_err();
+    let not_a_pack = inspect(&Kind::Shader, &fixtures().join("cozy-1.0.0.spack")).unwrap_err();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let facts = facts.unwrap();
+    assert_eq!(
+        (
+            facts.id.as_deref(),
+            facts.version.as_deref(),
+            facts.api.as_str()
+        ),
+        (Some("glow"), Some("1.0.0"), "0.1")
     );
-    assert_ne!(listed, text, "the fixture's project list moved");
-    let index = Index::parse(&listed).unwrap();
-    assert!(index.project("glow").is_none());
-    assert_eq!(index.projects.len(), sample().projects.len());
-    let glow = index.left_out.iter().find(|l| l.id == "glow").unwrap();
-    assert_eq!(glow.version, None);
+    assert!(refused.contains("post.wgsl:1:"), "{refused}");
     assert!(
-        glow.reason.contains("no longer supported"),
-        "{}",
-        glow.reason
+        experimental.contains("shader API 0.2, which is experimental"),
+        "{experimental}"
     );
-    // The strict check the registry runs before it publishes refuses it too.
-    let mut strict = sample();
-    strict.projects[0].kind = Kind::Other("shader".into());
-    assert!(strict.check().unwrap_err().contains("no longer supported"));
+    assert!(
+        not_a_pack.contains(sunrise_shader_api::MANIFEST),
+        "{not_a_pack}"
+    );
+    assert_eq!(Kind::Shader.extension(), Some("sshader"));
+    assert!(open(&Kind::Shader).is_ok());
 }
 
 /// A native source package with one `runtime/` file.

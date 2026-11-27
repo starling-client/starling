@@ -617,6 +617,14 @@ impl Game<'_> {
                     self.clipboard.set(&text);
                 }
                 Event::ListShaderPacks => {
+                    let (key, _) = sunrise_client::shader_pack_list::resolve(
+                        &Self::shader_packs_dir(),
+                        &self.settings.sunrise.shader_pack,
+                    );
+                    if key != self.settings.sunrise.shader_pack {
+                        self.settings.sunrise.shader_pack = key;
+                        self.settings.save(&Self::options_path());
+                    }
                     self.settings.shader_packs =
                         sunrise_client::shader_pack_list::scan(&Self::shader_packs_dir());
                     // A pack may have been replaced under the same name.
@@ -638,6 +646,11 @@ impl Game<'_> {
                 Event::ImportButtonImage(id) => self.pick_button_image(id),
                 Event::OpenShaderOptions => self.open_shader_options(),
                 Event::ShaderOptions => self.save_shader_options(),
+                Event::NativePackOptions(i) => {
+                    if let Some(pack) = self.settings.shader_packs.get(i) {
+                        pack.save_values(&Self::shader_packs_dir());
+                    }
+                }
                 Event::OpenShaderPackFolder => self.open_game_folder(&Self::shader_packs_dir()),
                 Event::ImportGpuDriver => {
                     sunrise_client::platform::pick_file();
@@ -907,11 +920,12 @@ impl Game<'_> {
     /// keeps the last non-empty pick, resuming restores it, and the off state survives a restart.
     /// With `SUNRISE_SHADER_PACK` set the developer override wins and the key does nothing.
     /// Invalidation stays with the normal selection path: the next frame's `shader_pack_inputs`
-    /// sees the changed pick and drops or loads the pack itself.
+    /// sees the changed pick and drops or loads the pack itself, for either pack kind.
     pub(super) fn toggle_shader_pack(&mut self) {
         let present = |key: &str| {
-            let dir = Self::shader_packs_dir();
-            !sunrise_client::shader_pack_list::unsupported(&dir, key) && dir.join(key).exists()
+            sunrise_client::shader_pack_list::resolve(&Self::shader_packs_dir(), key)
+                .1
+                .exists()
         };
         let plan = plan_shader_toggle(
             &self.settings.sunrise.shader_pack,

@@ -345,7 +345,7 @@ mod vertex_tests {
         // Another face replaces the first.
         assert_eq!(super::fluid_face(super::fluid_face(lit, 5), 1), 0x9D56_3412);
     }
-    /// What the colour's alpha byte holds: the face of a
+    /// What `gfx/native_material.rs` reads back from the colour's alpha byte: the face of a
     /// fluid quad, and the HDR tier.
     fn decoded(color: u32) -> (Option<u32>, u32) {
         let flags = color >> 24;
@@ -468,7 +468,8 @@ pub struct SectionMesh {
     /// each frame by `block_entity_render` like vanilla's per-section
     /// `SectionCompiler.Results.blockEntities`.
     pub block_entities: Vec<([i32; 3], u32)>,
-    /// Blocks that give off light (world position, state id).
+    /// Blocks that give off light (world position, state id), for the colour of block light
+    /// Sunrise's shader packs read (`gfx::block_light`).
     pub lights: Vec<([i32; 3], u32)>,
     /// Sprite layers emitted while building this mesh. Kept distinct before
     /// upload so the renderer does not rescan every terrain vertex.
@@ -1798,7 +1799,9 @@ pub fn emitting(color: u32, tier: u8) -> u32 {
 }
 /// The high nibble of `TerrainVertex::color`'s alpha byte: 8 plus the face (`Direction`
 /// as usize) on a fluid quad, 0xF on every other. `terrain.wgsl` reads only the low nibble
-/// (the emission); whether the fluid is water or lava follows from the pass that draws it.
+/// (the emission), so only the material stage of Sunrise's own packs reads it
+/// (`gfx/native_material.rs`); whether the fluid is water or lava follows from the pass
+/// that draws it.
 pub const FLUID_FACE_BITS: u32 = 0xF000_0000;
 /// `color` marked as a fluid quad of face `face` (`Direction` as usize, 0 to 5).
 pub fn fluid_face(color: u32, face: usize) -> u32 {

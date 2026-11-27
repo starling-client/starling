@@ -64,6 +64,8 @@ impl Report {
         if let Some(side) = f.side {
             let side = serde_json::to_value(side).unwrap_or_default();
             out += &format!(", API {}, {}", f.api, side.as_str().unwrap_or("?"));
+        } else if self.kind == Kind::Shader {
+            out += &format!(", shader API {}", f.api);
         } else if !f.api.is_empty() {
             out += &format!(", format {}", f.api);
         }
@@ -124,6 +126,7 @@ pub fn kind_of(path: &Path) -> Option<Kind> {
         "smod" => Some(Kind::Mod),
         "spack" => Some(Kind::Modpack),
         "zip" => Some(sunrise_mod_package::index::zip_kind(path)),
+        "sshader" => Some(Kind::Shader),
         _ => None,
     }
 }
@@ -971,6 +974,8 @@ mod tests {
         let smod = fixture("coords_hud-0.1.0.smod");
         let report = inspect(&smod, Kind::Mod).unwrap();
         assert!(report.text().contains("no code: content only"));
+        let e = inspect(&pack, Kind::Shader).err().unwrap();
+        assert!(e.contains("sunrise-shaders.toml"), "{e}");
         assert!(inspect(&pack, Kind::Mod).is_err());
     }
 

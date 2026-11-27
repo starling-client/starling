@@ -1,10 +1,12 @@
 //! Sunrise's shader settings screen, on the settings shell (`settings_shell`): the options of the
 //! picked shader pack (Shader Options). Its pages are the pack's own screens (a `shaders/` pack's
-//! `screen.NAME`s), read from the pack each time the rows are built; the pack list's rows and what
-//! picking does are here too, for Sunrise Settings' Shaders page (`sunrise_ui`), which lists them;
-//! the shell draws and drives them, searches every screen, collapses the screens into one row
-//! when the page list has no room for them, and has Undo. A pack's options apply when Apply
-//! is pressed or the screen closes, as the pack loads again with them.
+//! `screen.NAME`s, a Sunrise pack's `[[pages]]`), read from the pack each time the rows are built;
+//! the pack list's rows and what picking does are here too, for Sunrise Settings' Shaders page
+//! (`sunrise_ui`), which lists them; the shell draws and drives them, searches every screen,
+//! collapses the screens into one row when the page list has no room for them, and has Undo. A
+//! `shaders/` pack's options apply when Apply is pressed or the screen closes, as the pack loads
+//! again with them; a Sunrise pack's apply at once.
+use crate::shader_pack_list::Kind;
 use crate::{
     lang,
     options_ui::Event,
@@ -17,6 +19,7 @@ use std::collections::BTreeMap;
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
+use sunrise_shader_api::{OptionKind, PageItem};
 
 /// A page of the screen: screen `.0` of the picked pack (`screens`, 0 its main one).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,11 +37,12 @@ pub(crate) enum Item {
     /// Starling (Android): the catalog's shader packs shelf (game/mod_catalog.rs), a phone's way
     /// to get packs.
     Catalog,
-    /// Option `.0` of the picked pack: the `.0`th of its options by name.
+    /// Option `.0` of the picked pack: of a `shaders/` pack, the `.0`th of its options by name;
+    /// of a Sunrise pack, its `[[options]]` entry.
     Option(u16),
     /// Opens screen `.0`.
     Link(u16),
-    /// The next of the pack's profiles.
+    /// The next of a `shaders/` pack's profiles.
     Profile,
     /// Every option of the pack back to its default.
     Reset,
@@ -83,14 +87,31 @@ struct PackScreen {
     depth: u8,
 }
 
-/// The picked pack's options, when they are read (`s.shader_options`).
+/// The picked pack: its index in `s.shader_packs` and kind, and for a `shaders/` pack whether its
+/// options (`s.shader_options`) are read.
+fn picked(s: &Settings) -> Option<(usize, Kind)> {
+    let i = s
+        .shader_packs
+        .iter()
+        .position(|p| !s.sunrise.shader_pack.is_empty() && p.key == s.sunrise.shader_pack)?;
+    Some((i, s.shader_packs[i].kind))
+}
+
+/// The picked `shaders/` pack's options, when they are the picked pack's.
 fn classic(s: &Settings) -> Option<&crate::shader_options::ShaderOptions> {
     s.shader_options
         .as_ref()
         .filter(|o| o.pack == s.sunrise.shader_pack)
 }
 
-/// The `.0`th option name of the pack.
+/// The picked Sunrise pack, and its index in `s.shader_packs`.
+fn native(s: &Settings) -> Option<(usize, &crate::shader_pack_list::Entry)> {
+    picked(s)
+        .filter(|p| p.1 == Kind::Sunrise)
+        .map(|(i, _)| (i, &s.shader_packs[i]))
+}
+
+/// The `.0`th option name of a `shaders/` pack.
 fn option_name(o: &crate::shader_options::ShaderOptions, i: u16) -> Option<&str> {
     o.options.keys().nth(usize::from(i)).map(String::as_str)
 }
@@ -101,7 +122,11 @@ fn plain(t: Text) -> String {
 
 /// The picked pack's screens, its main one first, then in the order their links are met.
 fn screens(s: &Settings) -> Vec<PackScreen> {
-    classic(s).map_or_else(Vec::new, classic_screens)
+    match picked(s) {
+        Some((_, Kind::Classic)) => classic(s).map_or_else(Vec::new, classic_screens),
+        Some((i, Kind::Sunrise)) => native_screens(&s.shader_packs[i]),
+        None => Vec::new(),
+    }
 }
 
 fn classic_screens(o: &crate::shader_options::ShaderOptions) -> Vec<PackScreen> {
@@ -154,6 +179,68 @@ fn classic_screens(o: &crate::shader_options::ShaderOptions) -> Vec<PackScreen> 
     out
 }
 
+fn native_screens(pack: &crate::shader_pack_list::Entry) -> Vec<PackScreen> {
+    let count = pack.options.len().min(pack.values.len());
+    let reset = |mut items: Vec<Item>, first: bool| {
+        if first {
+            items.push(Item::Reset);
+        }
+        items
+    };
+    if pack.pages.is_empty() {
+        if count == 0 {
+            return Vec::new();
+        }
+        let items = (0..count).map(|o| Item::Option(o as u16)).collect();
+        return vec![PackScreen {
+            title: lang::get(GENERAL),
+            about: lang::get(PACK_SETTINGS),
+            items: reset(items, true),
+            depth: 0,
+        }];
+    }
+    // A page's depth: links from the first page are one away, the rest two.
+    let linked: Vec<usize> = pack.pages[0]
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            PageItem::Page(p) => Some(*p),
+            _ => None,
+        })
+        .collect();
+    pack.pages
+        .iter()
+        .enumerate()
+        .map(|(i, page)| {
+            let items = page
+                .items
+                .iter()
+                .filter_map(|item| match *item {
+                    PageItem::Option(o) if o < count => Some(Item::Option(o as u16)),
+                    PageItem::Page(p) if p < pack.pages.len() && p != i => {
+                        Some(Item::Link(p as u16))
+                    }
+                    _ => None,
+                })
+                .collect();
+            PackScreen {
+                title: if i == 0 {
+                    lang::get(GENERAL)
+                } else {
+                    page.name.clone()
+                },
+                about: page.description.clone(),
+                items: reset(items, i == 0),
+                depth: match i {
+                    0 => 0,
+                    _ if linked.contains(&i) => 1,
+                    _ => 2,
+                },
+            }
+        })
+        .collect()
+}
+
 /// A screen's name in the page list and over its rows.
 fn screen_name(i: u16, screens: &[PackScreen]) -> String {
     let screen = screens.get(usize::from(i));
@@ -165,7 +252,7 @@ fn parts(item: Item, s: &Settings, screens: &[PackScreen]) -> (String, Option<St
     match item {
         Item::Pack(i) => {
             let pack = s.shader_packs.get(usize::from(i));
-            let name = pack.map_or_else(String::new, |p| p.file.clone());
+            let name = pack.map_or_else(String::new, |p| p.title.clone());
             (name, Some(String::new()))
         }
         Item::Folder => (lang::get("pack.openFolder"), None),
@@ -185,10 +272,20 @@ fn parts(item: Item, s: &Settings, screens: &[PackScreen]) -> (String, Option<St
             Some(o) => shell::name_and_value(&plain(o.profile_label())),
             None => (String::new(), None),
         },
-        Item::Option(i) => match classic(s).and_then(|o| Some((o, option_name(o, i)?))) {
-            Some((o, name)) => (plain(o.option_name(name)), Some(plain(o.value_text(name)))),
-            None => (String::new(), None),
-        },
+        Item::Option(i) => {
+            if let Some((_, pack)) = native(s) {
+                let i = usize::from(i);
+                let (Some(o), Some(v)) = (pack.options.get(i), pack.values.get(i)) else {
+                    return (String::new(), None);
+                };
+                let value = crate::shader_pack_list::show_value(&o.kind, *v);
+                return (o.name.clone(), Some(value));
+            }
+            match classic(s).and_then(|o| Some((o, option_name(o, i)?))) {
+                Some((o, name)) => (plain(o.option_name(name)), Some(plain(o.value_text(name)))),
+                None => (String::new(), None),
+            }
+        }
     }
 }
 
@@ -198,15 +295,25 @@ fn switch(item: Item, s: &Settings) -> Option<bool> {
         Item::Pack(i) => Some(
             s.shader_packs
                 .get(usize::from(i))
-                .is_some_and(|p| p.file == s.sunrise.shader_pack),
+                .is_some_and(|p| p.key == s.sunrise.shader_pack),
         ),
-        Item::Option(i) => {
-            let o = classic(s)?;
-            let name = option_name(o, i)?;
-            o.options[name]
-                .switch
-                .then(|| o.value(name) == Some("true"))
-        }
+        Item::Option(i) => match picked(s)? {
+            (p, Kind::Sunrise) => {
+                let pack = &s.shader_packs[p];
+                let i = usize::from(i);
+                match pack.options.get(i)?.kind {
+                    OptionKind::Bool { .. } => Some(*pack.values.get(i)? != 0.0),
+                    _ => None,
+                }
+            }
+            (_, Kind::Classic) => {
+                let o = classic(s)?;
+                let name = option_name(o, i)?;
+                o.options[name]
+                    .switch
+                    .then(|| o.value(name) == Some("true"))
+            }
+        },
         _ => None,
     }
 }
@@ -214,16 +321,33 @@ fn switch(item: Item, s: &Settings) -> Option<bool> {
 /// A slider's position, for an option the pack shows as one.
 fn slider(item: Item, s: &Settings) -> Option<f32> {
     let Item::Option(i) = item else { return None };
-    let o = classic(s)?;
-    o.slider_position(option_name(o, i)?)
+    match picked(s)? {
+        (p, Kind::Sunrise) => s.shader_packs[p].slider_position(usize::from(i)),
+        (_, Kind::Classic) => {
+            let o = classic(s)?;
+            o.slider_position(option_name(o, i)?)
+        }
+    }
 }
 
-/// A slider's stops, which Left and Right step between: the option's values.
+/// A slider's stops, which Left and Right step between: a `shaders/` option's values, a Sunrise
+/// float's steps from its minimum (the last one its maximum) or an int's whole numbers.
 fn slider_steps(item: Item, s: &Settings) -> Option<u32> {
     let Item::Option(i) = item else { return None };
-    let o = classic(s)?;
-    let stops = o.options[option_name(o, i)?].values.len().saturating_sub(1);
-    (stops >= 1).then_some(stops as u32)
+    let stops = match picked(s)? {
+        (p, Kind::Sunrise) => match s.shader_packs[p].options.get(usize::from(i))?.kind {
+            OptionKind::Float { min, max, step, .. } => {
+                crate::shader_pack_list::float_steps(min, max, step) as f32
+            }
+            OptionKind::Int { min, max, .. } => (max - min) as f32,
+            _ => return None,
+        },
+        (_, Kind::Classic) => {
+            let o = classic(s)?;
+            o.options[option_name(o, i)?].values.len().saturating_sub(1) as f32
+        }
+    };
+    (stops >= 1.0).then_some(stops as u32)
 }
 
 /// What a row does, or says of itself, for the strip and the search.
@@ -233,8 +357,11 @@ fn description(item: Item, s: &Settings, screens: &[PackScreen]) -> String {
             let Some(pack) = s.shader_packs.get(usize::from(i)) else {
                 return String::new();
             };
-            let kind = lang::get("An OptiFine or Iris shader pack.");
-            let what = lang::get(if pack.file == s.sunrise.shader_pack {
+            let kind = lang::get(match pack.kind {
+                Kind::Sunrise => "A Sunrise shader pack.",
+                Kind::Classic => "An OptiFine or Iris shader pack.",
+            });
+            let what = lang::get(if pack.key == s.sunrise.shader_pack {
                 "In use: press to turn shaders off."
             } else {
                 "Press to use it."
@@ -265,10 +392,17 @@ fn description(item: Item, s: &Settings, screens: &[PackScreen]) -> String {
             .get(usize::from(i))
             .map(|s| s.about.clone())
             .unwrap_or_default(),
-        Item::Option(i) => classic(s)
-            .and_then(|o| o.comment(&format!("option.{}", option_name(o, i)?)))
-            .map(plain)
-            .unwrap_or_default(),
+        Item::Option(i) => match native(s) {
+            Some((_, pack)) => pack
+                .options
+                .get(usize::from(i))
+                .map(|o| o.description.clone())
+                .unwrap_or_default(),
+            None => classic(s)
+                .and_then(|o| o.comment(&format!("option.{}", option_name(o, i)?)))
+                .map(plain)
+                .unwrap_or_default(),
+        },
     }
 }
 
@@ -309,7 +443,7 @@ pub(crate) fn pack_rows(s: &Settings) -> Vec<Row<Item>> {
 /// has no screens (its options weren't read: the pack was refused).
 pub(crate) fn settings_blocked(s: &Settings) -> Option<&'static str> {
     let pick = &s.sunrise.shader_pack;
-    if pick.is_empty() || !s.shader_packs.iter().any(|p| &p.file == pick) {
+    if pick.is_empty() || !s.shader_packs.iter().any(|p| &p.key == pick) {
         Some(NO_PICK)
     } else if screens(s).is_empty() {
         Some(NO_SCREENS)
@@ -329,14 +463,19 @@ pub(crate) fn packs_about(s: &Settings) -> String {
 
 /// The picked pack's name, over its screens in the page list.
 fn pack_name(s: &Settings) -> &str {
-    (s.sunrise.shader_pack)
-        .strip_suffix(".zip")
-        .unwrap_or(&s.sunrise.shader_pack)
+    match native(s) {
+        Some((_, pack)) => pack.title.as_str(),
+        None => (s.sunrise.shader_pack)
+            .strip_suffix(".zip")
+            .unwrap_or(&s.sunrise.shader_pack),
+    }
 }
 
-/// The shader screen. Its rows read the settings; what it keeps is for Undo.
+/// The shader screen. Its rows read the settings; what it keeps is for Undo and a drag.
 #[derive(Default)]
 pub(crate) struct ShaderScreen {
+    /// The Sunrise pack whose slider a drag moved: saved once, when it lets go.
+    drag_changed: Option<usize>,
     /// The values this screen saved to a `shaders/` pack's file (picking another pack, Apply),
     /// by pack: Undo puts back the ones the screen opened with over them.
     written: BTreeMap<String, BTreeMap<String, String>>,
@@ -395,7 +534,9 @@ impl shell::Screen for ShaderScreen {
     }
     /// The rows read the packs, the pick and its options.
     fn stamp(&self, s: &Settings) -> u64 {
-        let packs: Vec<_> = s.shader_packs.iter().map(|p| &p.file).collect();
+        let packs: Vec<_> = (s.shader_packs.iter())
+            .map(|p| (&p.key, &p.title, &p.values, p.options.len(), p.pages.len()))
+            .collect();
         let options = (s.shader_options.as_ref()).map(|o| (&o.pack, &o.chosen, o.changed));
         let h = &s.sunrise;
         shell::stamp_of(&(
@@ -444,12 +585,13 @@ impl shell::Screen for ShaderScreen {
     fn press(&mut self, s: &mut Settings, item: Item, back: bool) -> Vec<Output> {
         let changed = vec![Output::Event(Event::Changed)];
         let pack = s.sunrise.shader_pack.clone();
+        let native = native(s).map(|p| p.0);
         match item {
             Item::Pack(i) => {
                 let Some(p) = s.shader_packs.get(usize::from(i)) else {
                     return Vec::new();
                 };
-                let key = p.file.clone();
+                let key = p.key.clone();
                 if s.sunrise.shader_pack == key {
                     s.set_shader_pick("");
                 } else {
@@ -518,23 +660,35 @@ impl shell::Screen for ShaderScreen {
                 }
                 None => Vec::new(),
             },
-            Item::Reset => match s.shader_options.as_mut().filter(|o| o.pack == pack) {
-                Some(o) => {
-                    o.reset();
-                    changed
+            Item::Reset => match native {
+                Some(p) => {
+                    s.shader_packs[p].reset_options();
+                    vec![Output::Event(Event::NativePackOptions(p))]
                 }
-                None => Vec::new(),
-            },
-            Item::Option(i) => {
-                let options = s.shader_options.as_mut().filter(|o| o.pack == pack);
-                match options.and_then(|o| Some((option_name(o, i)?.to_owned(), o))) {
-                    Some((name, o)) => {
-                        o.cycle(&name, back);
+                None => match s.shader_options.as_mut().filter(|o| o.pack == pack) {
+                    Some(o) => {
+                        o.reset();
                         changed
                     }
                     None => Vec::new(),
+                },
+            },
+            Item::Option(i) => match native {
+                Some(p) if s.shader_packs[p].step_option(usize::from(i), back, false) => {
+                    vec![Output::Event(Event::NativePackOptions(p))]
                 }
-            }
+                Some(_) => Vec::new(),
+                None => {
+                    let options = s.shader_options.as_mut().filter(|o| o.pack == pack);
+                    match options.and_then(|o| Some((option_name(o, i)?.to_owned(), o))) {
+                        Some((name, o)) => {
+                            o.cycle(&name, back);
+                            changed
+                        }
+                        None => Vec::new(),
+                    }
+                }
+            },
         }
     }
     /// A slider moves an option to the value nearest it.
@@ -542,12 +696,25 @@ impl shell::Screen for ShaderScreen {
         let Item::Option(i) = item else {
             return;
         };
+        if let Some((p, _)) = native(s) {
+            if s.shader_packs[p].set_slider_position(usize::from(i), position as f32) {
+                self.drag_changed = Some(p);
+            }
+            return;
+        }
         let pack = s.sunrise.shader_pack.clone();
         if let Some(o) = s.shader_options.as_mut().filter(|o| o.pack == pack)
             && let Some(name) = option_name(o, i).map(str::to_owned)
         {
             o.set_position(&name, position as f32);
         }
+    }
+    /// A Sunrise pack's options are saved, and the pack rebuilt, once a drag.
+    fn slider_released(&mut self) -> Vec<Output> {
+        let changed = self.drag_changed.take();
+        changed.map_or_else(Vec::new, |p| {
+            vec![Output::Event(Event::NativePackOptions(p))]
+        })
     }
     /// With the "Scroll wheel changes settings" extra, the wheel steps an option between `<` `>`
     /// and the profile (up goes back); the other rows leave it to scroll the list.
@@ -567,10 +734,18 @@ impl shell::Screen for ShaderScreen {
     fn undoes(&self) -> bool {
         true
     }
-    /// The pick, the remembered pick and the options of the pack picked when the screen opened
-    /// (saved when it closes, or Apply), as the screen opened with them. Another pack keeps what
-    /// was saved for it.
+    /// The pick, the remembered pick, the Sunrise packs' options (saved again) and the options
+    /// of the `shaders/` pack picked when the screen opened (saved when it closes, or Apply), as
+    /// the screen opened with them. Another `shaders/` pack keeps what was saved for it.
     fn undo(&mut self, s: &mut Settings, before: &Settings) -> Vec<Output> {
+        let mut outputs = Vec::new();
+        for (i, pack) in s.shader_packs.iter_mut().enumerate() {
+            let was = before.shader_packs.iter().find(|p| p.key == pack.key);
+            if let Some(was) = was.filter(|was| was.values != pack.values) {
+                pack.values = was.values.clone();
+                outputs.push(Output::Event(Event::NativePackOptions(i)));
+            }
+        }
         // The same pick: its options go back as they were.
         if s.sunrise.shader_pack == before.sunrise.shader_pack
             && let Some(o) = s.shader_options.as_mut()
@@ -578,18 +753,23 @@ impl shell::Screen for ShaderScreen {
         {
             o.restore(was.chosen.clone());
         }
-        self.undo_pick(s, before)
+        outputs.extend(self.undo_pick(s, before));
+        outputs
     }
-    /// Undo shows exactly while the pick, the remembered pick or the pack's options differ from
+    /// Undo shows exactly while the pick, the remembered pick or a pack's options differ from
     /// what the screen opened with: an option stepped back to its value isn't a change.
     fn differs(&self, s: &Settings, before: &Settings) -> Option<bool> {
+        let native = s.shader_packs.iter().any(|pack| {
+            let was = before.shader_packs.iter().find(|p| p.key == pack.key);
+            was.is_some_and(|was| was.values != pack.values)
+        });
         let options = match (classic(s), before.shader_options.as_ref()) {
             (Some(o), Some(was)) => o.pack == was.pack && o.chosen != was.chosen,
             _ => false,
         };
-        Some(Self::pick_differs(s, before) || options)
+        Some(Self::pick_differs(s, before) || native || options)
     }
-    /// The pack's options wait for Apply until the pack loads again with them.
+    /// A `shaders/` pack's options wait for Apply until the pack loads again with them.
     fn pending(&self, s: &Settings) -> bool {
         classic(s).is_some_and(|o| o.changed)
     }
@@ -624,8 +804,16 @@ mod tests {
         .unwrap()
     }
 
-    fn entry(file: &str) -> Entry {
-        Entry { file: file.into() }
+    fn entry(file: &str, kind: Kind) -> Entry {
+        Entry {
+            file: file.into(),
+            key: file.into(),
+            title: file.into(),
+            kind,
+            options: Vec::new(),
+            values: Vec::new(),
+            pages: Vec::new(),
+        }
     }
 
     fn option(name: &str, values: &[&str], switch: bool) -> (String, PackOption) {
@@ -642,7 +830,7 @@ mod tests {
     /// `A.zip` picked, with `options` laid out by `properties`.
     fn classic_pack(options: BTreeMap<String, PackOption>, properties: &str) -> Settings {
         let mut s = Settings {
-            shader_packs: vec![entry("A.zip"), entry("B.zip")],
+            shader_packs: vec![entry("A.zip", Kind::Classic), entry("B.zip", Kind::Classic)],
             ..Settings::default()
         };
         s.sunrise.shader_pack = "A.zip".into();
@@ -796,22 +984,26 @@ mod tests {
 
     #[test]
     fn picking_a_pack_and_picking_it_again_turns_shaders_off() {
-        let key = "B.zip";
-        let mut s = settings();
-        // Sunrise Settings' Shaders page lists the packs and hands a press to this screen.
-        let mut screen = ShaderScreen::default();
-        let picks = vec![
-            Output::Event(Event::ShaderPack),
-            Output::Event(Event::OpenShaderOptions),
-        ];
-        assert_eq!(screen.press(&mut s, Item::Pack(1), false), picks);
-        assert_eq!(s.sunrise.shader_pack, key);
-        assert_eq!(s.extras.last_shader_pack, key);
-        assert_eq!(switch(Item::Pack(1), &s), Some(true));
-        screen.press(&mut s, Item::Pack(1), false);
-        assert_eq!(s.sunrise.shader_pack, "");
-        assert_eq!(s.extras.last_shader_pack, key);
-        assert_eq!(switch(Item::Pack(0), &s), Some(false));
+        for (kind, key) in [(Kind::Classic, "B.zip"), (Kind::Sunrise, "sunrise:warm")] {
+            let mut s = settings();
+            s.shader_packs[1].kind = kind;
+            s.shader_packs[1].key = key.into();
+            // Sunrise Settings' Shaders page lists the packs and hands a press to this screen.
+            let mut screen = ShaderScreen::default();
+            let picks = vec![
+                Output::Event(Event::ShaderPack),
+                Output::Event(Event::OpenShaderOptions),
+            ];
+            assert_eq!(screen.press(&mut s, Item::Pack(1), false), picks);
+            assert_eq!(s.sunrise.shader_pack, key);
+            assert_eq!(s.extras.last_shader_pack, key);
+            assert_eq!(picked(&s), Some((1, kind)));
+            assert_eq!(switch(Item::Pack(1), &s), Some(true));
+            screen.press(&mut s, Item::Pack(1), false);
+            assert_eq!(s.sunrise.shader_pack, "");
+            assert_eq!(s.extras.last_shader_pack, key);
+            assert_eq!(switch(Item::Pack(0), &s), Some(false));
+        }
     }
 
     #[test]
@@ -928,8 +1120,56 @@ mod tests {
     }
 
     #[test]
-    fn undo_puts_back_the_pick_and_the_options() {
+    /// A Sunrise pack picked, with a float option from 0 to 1 in steps of 0.1 at 0.5.
+    fn sunrise_pack() -> Settings {
+        let mut pack = entry("H", Kind::Sunrise);
+        pack.key = "sunrise:slider_test".into();
+        pack.options = vec![sunrise_shader_api::PackOption {
+            id: "strength".into(),
+            name: "Strength".into(),
+            description: String::new(),
+            kind: OptionKind::Float {
+                default: 0.5,
+                min: 0.0,
+                max: 1.0,
+                step: 0.1,
+            },
+        }];
+        pack.values = vec![0.5];
+        let mut s = Settings {
+            shader_packs: vec![pack],
+            ..Settings::default()
+        };
+        s.sunrise.shader_pack = "sunrise:slider_test".into();
+        s
+    }
+
+    #[test]
+    fn a_sunrise_packs_slider_drag_is_saved_once_when_released_and_a_key_step_at_once() {
+        let mut s = sunrise_pack();
+        let mut shell = shell_at(Tab::Screen(0));
+        let (_, y) = shell.point_at(&s, SIZE, Item::Option(0));
+        let (track, width) = crate::settings_shell::Columns::of(SIZE.0, SIZE.1).track();
+        let start = shell.click(&mut s, (track + 2.0, y), SIZE, false, false, false);
+        assert_eq!(start, [Output::Event(Event::SliderDrag)]);
+        shell.click(&mut s, (track + width, y), SIZE, true, false, false);
+        assert_eq!(s.shader_packs[0].values[0], 1.0);
+        let saved = vec![Output::Event(Event::NativePackOptions(0))];
+        assert_eq!(shell.release(), Some(saved.clone()));
+        assert_eq!(shell.release(), None);
+        // Left steps it one of its steps, saved as it goes.
+        let stepped = shell.key(&mut s, K::ArrowLeft, None, false, SIZE);
+        assert_eq!(
+            stepped,
+            [&[Output::Event(Event::SliderDrag)][..], &saved].concat()
+        );
+        assert!((s.shader_packs[0].values[0] - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn undo_puts_back_the_pick_the_options_and_a_sunrise_packs_values() {
         let mut s = settings();
+        s.shader_packs.push(sunrise_pack().shader_packs.remove(0));
         let mut shell = shell_at(Tab::Screen(0));
         let undo_shows = |shell: &mut Shell<ShaderScreen>, s: &Settings| {
             shell.foot_at(s, SIZE).iter().any(|f| f.0 == Target::Undo)
@@ -939,16 +1179,22 @@ mod tests {
         // Stepped back to how it opened, there is nothing to undo.
         press(&mut shell, &mut s, Item::Option(0));
         assert!(!undo_shows(&mut shell, &s));
-        // A changed option, then another pack picked.
+        // A changed option, then the Sunrise pack picked and its option moved.
         press(&mut shell, &mut s, Item::Option(0));
-        // Another pack picked on Sunrise Settings' Shaders page, by this screen's press.
-        let picked = shell.screen.press(&mut s, Item::Pack(1), false);
+        // The Sunrise pack picked on Sunrise Settings' Shaders page, by this screen's press.
+        let picked = shell.screen.press(&mut s, Item::Pack(2), false);
         assert!(
             picked.contains(&Output::Event(Event::ShaderOptions)),
             "{picked:?}"
         );
-        // The game reads the next pack's options: this one has none.
+        // The game reads the next pack's options: a Sunrise pack has none of these.
         s.shader_options = None;
+        // Its slider, a step on from the keyboard.
+        shell.show(Tab::Screen(0));
+        shell.set_focus(Some(Target::Row(Item::Option(0))));
+        shell.key(&mut s, K::Enter, None, false, SIZE);
+        shell.key(&mut s, K::ArrowRight, None, false, SIZE);
+        assert_ne!(s.shader_packs[2].values[0], 0.5);
         let undo = shell
             .foot_at(&s, SIZE)
             .into_iter()
@@ -962,13 +1208,16 @@ mod tests {
             false,
             false,
         );
-        // The pick is back and saved; the pack's options are back as it opened, to be saved
-        // over what picking away saved.
+        // The pick and the Sunrise pack's value are back and saved; the `shaders/` pack's options
+        // are back as it opened, to be saved over what picking away saved.
         assert_eq!(s.sunrise.shader_pack, "A.zip");
-        assert!(
-            outputs.contains(&Output::Event(Event::ShaderPack)),
-            "{outputs:?}"
-        );
+        assert_eq!(s.shader_packs[2].values[0], 0.5);
+        for event in [Event::NativePackOptions(2), Event::ShaderPack] {
+            assert!(
+                outputs.contains(&Output::Event(event.clone())),
+                "{outputs:?}"
+            );
+        }
         assert_eq!(switch(Item::Option(0), &s), Some(false));
         assert!(classic(&s).unwrap().changed);
         assert!(!undo_shows(&mut shell, &s));
@@ -979,6 +1228,8 @@ mod tests {
         let mut s = settings();
         let (_, mut missed) = lang::scoped(lang::Language::load(&[], "de_de"), || {
             let screen = ShaderScreen::default();
+            screen.sheets(&s);
+            s.shader_packs[0].kind = Kind::Sunrise;
             screen.sheets(&s);
             s.shader_packs.clear();
             screen.sheets(&s);

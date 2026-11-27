@@ -678,13 +678,13 @@ async fn what_the_form_refuses() {
     f["signature"] = json!(broken);
     let (status, json) = client.submit(&csrf, &f, &file).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
-    // The retired `shader` kind is refused like any kind the registry doesn't take.
+    // A shader pack runs the game's own check: a mod's file isn't one.
     let mut f = form();
     f["kind"] = json!("shader");
     f["categories"] = json!(["bloom"]);
     let (status, json) = client.submit(&csrf, &f, &file).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
-    refused(status, &json, "the registry doesn't take shader yet");
+    refused(status, &json, "sunrise-shaders.toml: missing");
     // An update by someone who isn't an owner.
     let owned = "id = \"coords_hud\"\nkind = \"mod\"\nname = \"C\"\nsummary = \"s\"\nowners = [\"bob\"]\nlicense = \"MIT\"\nsource = \"https://x.test\"\n\n[[versions]]\nversion = \"0.0.1\"\npublished = \"2026-01-01\"\ngame = \"26.3\"\nfile = \"coords_hud-0.0.1.smod\"\nsha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\n";
     mock.lock()

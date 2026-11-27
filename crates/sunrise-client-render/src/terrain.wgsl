@@ -631,7 +631,8 @@ fn unorm8x4(c: u32) -> vec4<f32> {
 fn corner_layer(c: ArenaCorner) -> u32 {
     return c.r.y & 0xffffu;
 }
-// A corner's inputs as `TERRAIN_ATTRIBUTES` name them.
+// A corner's inputs as `TERRAIN_ATTRIBUTES` name them; a shader pack's material and shadow
+// pass read their solid corners through this too (gfx/native_material.rs's `SECTION_CORNER`).
 struct CornerInputs {
     position: vec3<f32>,
     uv: vec2<u32>,
@@ -1052,7 +1053,8 @@ fn sunrise_weight(d: vec3<f32>) -> f32 {
     }
     return best;
 }
-// The sky's colour along the view ray `d`.
+// The sky's colour along the view ray `d` (a shader pack's sky stage gets it as its input:
+// gfx/native_sky.rs builds that stage from this section).
 fn sky_along_ray(d: vec3<f32>) -> vec3<f32> {
     var color = sky_along_ray_base(d);
     let w = sunrise_weight(d);

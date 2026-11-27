@@ -177,10 +177,11 @@ pub fn cull_frustum(
 
 impl Renderer {
     /// Whether order-independent transparency is active for the given option value on this
-    /// renderer (no shader pack post-chain, and device supports OIT).
+    /// renderer (no shader pack post-chain, no native pack, and device supports OIT).
     pub fn oit_active_for(&self, improved_transparency: bool) -> bool {
         improved_transparency
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
+            && self.native.is_none()
             && super::oit::supported(&self.device)
     }
 
@@ -225,8 +226,8 @@ impl Renderer {
             .taa_render_size([self.config.width, self.config.height]);
         self.asked_world_views(taa_frustum(views.cull_view_proj(view_transform), size))
     }
-    /// Validator for the live bob transform. The world/shadow cull and the shader-pack
-    /// model-view do not invert the same product.
+    /// Validator for the live bob transform. The world/shadow cull, the native post
+    /// projection and the shader-pack model-view do not invert the same product.
     pub fn view_transform_validator(
         &self,
         [yaw, pitch, roll]: [f32; 3],
@@ -245,6 +246,21 @@ impl Renderer {
         let pack_post = self.pack_post.as_ref().is_some_and(|p| p.1.is_some());
         let pack_rotation = pack_post
             .then(|| sunrise_render_shaderpack::joml::view_rotation_matrix(yaw, pitch, roll).0);
+        let native_projections = self.native.as_ref().map(|native| {
+            let taa = !pack_post && native.post.is_none();
+            let scale = self.world_post.scale;
+            let window_sizes = self.world_post.render_sizes(window, scale, taa);
+            let capture_sizes = capture.map(|size| {
+                self.world_post.render_sizes(
+                    size,
+                    super::screenshot::screenshot_world_scale(scale),
+                    taa,
+                )
+            });
+            window_sizes
+                .chain(capture_sizes.into_iter().flatten())
+                .map(move |[w, h]| super::world_projection(fov, w as f32 / h.max(1) as f32, far))
+        });
         move |matrix| {
             let bob = vanilla_bob * Mat4::from_cols_array(&matrix);
             let pose = bob * spin;
@@ -253,6 +269,13 @@ impl Renderer {
                 .flatten()
                 .all(|view| usable_view_transform(view, bob, spin))
                 && pack_rotation.is_none_or(|rotation| invertible(pose * rotation))
+                && native_projections
+                    .clone()
+                    .into_iter()
+                    .flatten()
+                    .all(|projection| {
+                        invertible(super::native_post::view_projection(projection, bob, spin))
+                    })
         }
     }
 
@@ -271,7 +294,11 @@ fn invertible(matrix: Mat4) -> bool {
 }
 
 fn usable_view_transform(view: &View, bob: Mat4, spin: Mat4) -> bool {
-    invertible(view.projection * bob * spin) && invertible(view.view_proj(bob * spin))
+    invertible(super::native_post::view_projection(
+        view.projection,
+        bob,
+        spin,
+    )) && invertible(view.view_proj(bob * spin))
 }
 
 /// Where a perspective `view_proj` sees from, in its own (camera-relative)
@@ -291,6 +318,25 @@ pub(super) fn projection_center(view_proj: Mat4) -> Option<Vec3> {
     }
     let b = DVec3::new(rows[0].w, rows[1].w, rows[2].w);
     Some((a.inverse() * -b).as_vec3())
+}
+
+/// `view_proj` mirrored about the horizontal plane at the camera-relative height `plane`:
+/// with F the mirror (y flips and moves to 2 * plane), `view_proj * F` negates column 1
+/// and moves column 3 by 2 * plane times column 1.
+///
+/// `mirror_inverse_view` is the inverse's other side: F * `inverse_view`.
+pub(super) fn mirror_view_projection(view_proj: Mat4, plane: f32) -> Mat4 {
+    let mut m = view_proj.to_cols_array_2d();
+    let col1 = m[1];
+    m[1] = col1.map(|v| -v);
+    m[3] = std::array::from_fn(|i| m[3][i] + 2.0 * plane * col1[i]);
+    Mat4::from_cols_array_2d(&m)
+}
+
+/// The mirror's `inverse_view` (the sky's rays): what the view sees, mirrored about the
+/// horizontal plane at the camera-relative height `plane`, so F * `inverse_view`.
+pub(super) fn mirror_inverse_view(inverse_view: [[f32; 4]; 4], plane: f32) -> [[f32; 4]; 4] {
+    inverse_view.map(|[x, y, z, w]| [x, 2.0 * plane * w - y, z, w])
 }
 
 #[cfg(feature = "test-support")]

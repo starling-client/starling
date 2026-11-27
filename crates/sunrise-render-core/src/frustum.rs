@@ -149,6 +149,10 @@ pub fn frustum_planes_from_view_proj(m: Mat4) -> [Vec4; 6] {
     planes.map(|p| p / p.truncate().length())
 }
 
+/// The union of two frusta (the camera's and its water mirror's), for visibility testing.
+#[derive(Clone, Copy, Debug)]
+pub struct Frusta(pub Frustum, pub Option<Frustum>);
+
 /// What visibility tests cull with: a frustum or a union of them.
 pub trait Cull {
     fn intersects(&self, min: Vec3, max: Vec3) -> bool;
@@ -177,6 +181,23 @@ impl Cull for Frustum {
     fn offset_for_camera_cube(&self, camera: DVec3, cube_size: i32) -> Option<JoinedFrusta> {
         Some(JoinedFrusta::from(
             self.offset_to_fully_include_camera_cube(camera, cube_size),
+        ))
+    }
+}
+
+impl Cull for Frusta {
+    fn intersects(&self, min: Vec3, max: Vec3) -> bool {
+        self.0.intersects(min, max) || self.1.is_some_and(|f| f.intersects(min, max))
+    }
+    fn contains(&self, min: Vec3, max: Vec3) -> bool {
+        self.0.contains(min, max) || self.1.is_some_and(|f| f.contains(min, max))
+    }
+    fn offset_for_camera_cube(&self, camera: DVec3, cube_size: i32) -> Option<JoinedFrusta> {
+        Some(JoinedFrusta::new(
+            self.0
+                .offset_to_fully_include_camera_cube(camera, cube_size),
+            self.1
+                .map(|f| f.offset_to_fully_include_camera_cube(camera, cube_size)),
         ))
     }
 }

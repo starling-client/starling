@@ -539,8 +539,9 @@ impl Renderer {
                 ),
             )
         });
-        // A mirrored world view's picture is flipped (`world_views::Flipped`), which turns the
-        // winding round, so its terrain culls the front.
+        // The water mirror's camera sees the world from the other side of the plane, and a
+        // mirrored world view's picture is flipped (`world_views::Flipped`): each turns the
+        // winding round, so their terrain culls the front.
         let front = |label, fragment, blend| {
             pipeline(
                 label,
@@ -554,6 +555,7 @@ impl Renderer {
                 blend,
             )
         };
+        let solid_mirror = front("Terrain solid (mirrored)", "fs_solid_mirror", None);
         let flipped = solid_in(
             &layout,
             "Terrain solid (flipped)",
@@ -783,6 +785,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let mirror_globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Water mirror globals"),
+            size: std::mem::size_of::<Globals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let prepared = match prepared {
             Some(prepared) => prepared.resplit(layers, split),
             None => PreparedTextures::with_split(
@@ -990,6 +998,17 @@ impl Renderer {
             &lightmap_sampler,
             &emission_stats.view,
             emissive_view,
+        );
+        let mirror_group = terrain_group(
+            &device,
+            "Water mirror resources",
+            &bindings,
+            &mirror_globals,
+            &sprite_views,
+            &sprite_sampler,
+            &lightmap_view,
+            &lightmap_sampler,
+            &emission_stats.view,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -2184,7 +2203,7 @@ impl Renderer {
         // With flat draws' page groups the per-section solid draws read their vertices from
         // the page too (`Flat::page_group`), in either layout of the solid quads
         // (`mesher::packed`): only the origins stay a vertex buffer, at slot 1.
-        let (solid, solid_split, flipped) = match &flat {
+        let (solid, solid_split, solid_mirror, flipped) = match &flat {
             Some(f) => {
                 let pulled_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Sunrise terrain layout (pulled)"),
@@ -2214,10 +2233,22 @@ impl Renderer {
                             ),
                         )
                     }),
+                    pipeline_in(
+                        &pulled_layout,
+                        "Terrain solid (mirrored)",
+                        "vs_section",
+                        "fs_solid_mirror",
+                        &origins,
+                        tri,
+                        Some(front),
+                        true,
+                        true,
+                        None,
+                    ),
                     solid("Terrain solid (flipped)", "vs_section", "fs_solid", front),
                 )
             }
-            None => (solid, solid_split, flipped),
+            None => (solid, solid_split, solid_mirror, flipped),
         };
         // The solid quads in the compact layout where every pass reads it; the first world
         // frames settle it for the picked pack (`follow_packed_layout`).
@@ -2559,6 +2590,10 @@ impl Renderer {
             debug_line_capacity: 4096,
             crosshair_group,
             crosshair_globals,
+            solid_mirror,
+            mirror_globals,
+            mirror_group,
+            mirror: None,
             world_views: views,
             world_view_side: max_side,
             entity_pipeline,
@@ -2738,6 +2773,8 @@ impl Renderer {
             newest_upload: None,
             newest_lod_fade: None,
             block_entity_revision: next_block_entity_revision(),
+            light_blocks: Default::default(),
+            light_revision: 0,
             occlusion: occlusion::Occlusion::new(crate::chunk::MIN_Y, crate::chunk::HEIGHT / 16),
             layout: crate::chunk::ColumnLayout::VANILLA,
             world_post,
@@ -2752,6 +2789,7 @@ impl Renderer {
             auto_off_since: None,
             // Nothing is presented as HDR yet: `update_output` applies the settings.
             output: output::resolve_output(settings, output_caps, display, frame, false),
+            frame_kept_logged: false,
             hdr_marker: None,
             hdr_driver,
             // The start goes on in this renderer: the loading screen's is replaced by the
@@ -2761,6 +2799,7 @@ impl Renderer {
             pack_post: None,
             pack_loading: None,
             pack_generation: 0,
+            native: None,
             pass_timing: false,
             pass_detail: false,
             pass_timing_gap: std::time::Duration::ZERO,

@@ -110,6 +110,8 @@ pub struct Flat {
     /// then the rest.
     pub solid_opaque: SolidPipeline,
     pub solid_cutout: SolidPipeline,
+    /// The solid draws as the water mirror's camera draws them (`fs_solid_mirror`).
+    pub solid_mirror: wgpu::RenderPipeline,
     pub translucent: wgpu::RenderPipeline,
     pub translucent_mark: wgpu::RenderPipeline,
     /// `solid` and `translucent` as a mirrored world view draws them, culling the front.
@@ -539,6 +541,16 @@ impl Flat {
                 "vs_section_flat_cutout",
                 "fs_solid",
                 wgpu::Face::Back,
+            ),
+            // The mirror flips the winding: its solid terrain culls the front.
+            solid_mirror: pipeline(
+                &layout,
+                "Terrain solid mirrored (flat)",
+                "vs_section_flat",
+                "fs_solid_mirror",
+                None,
+                Some(wgpu::Face::Front),
+                true,
             ),
             translucent: pipeline(
                 &layout,

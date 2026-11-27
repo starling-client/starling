@@ -255,6 +255,7 @@ impl Renderer {
                     * (size_of::<crate::lod::TileKey>() + size_of::<lod::Tile>() + 1),
             ),
             ("block_entities", self.block_entities.heap_bytes()),
+            ("light_sources", self.light_blocks.heap_bytes()),
         ]
     }
 }

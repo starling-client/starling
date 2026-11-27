@@ -1,9 +1,10 @@
-//! A registry checkout holding the sample index's mod and modpack
+//! A registry checkout holding the sample index's mod, modpack and shader pack
 //! builds the sample index (`tests/index/index-v1.json`) exactly.
 use super::*;
 
 const SMOD: &str = "cb6e658445269b2a4d2eb104e83e4b993586bc2e56814fd56454244139f08364";
 const SPACK: &str = "ca9a0207d5a9df142962a2dd7563a639eea6774e7f144b6ef239eb6eaf753f58";
+const SSHADER: &str = "a23c5fe9fd173243704dd51160f20f35927c6e0060c5541ce1823f25db8c7961";
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/index")
@@ -65,6 +66,26 @@ file = "cozy-1.0.0.spack"
 sha256 = "ca9a0207d5a9df142962a2dd7563a639eea6774e7f144b6ef239eb6eaf753f58"
 "#;
 
+const GLOW: &str = r#"id = "glow"
+kind = "shader"
+name = "Soft Glow"
+summary = "A post-processing pass over the world."
+description = "A soft bloom drawn over the world after it renders, in Sunrise's own shader format."
+categories = ["bloom"]
+icon = "icons/glow.png"
+authors = ["Sunrise"]
+owners = ["ludovic111"]
+license = "MIT"
+source = "https://github.com/horizon-rust/horizon-mods"
+
+[[versions]]
+version = "1.0.0"
+published = "2026-10-26"
+game = "26.3"
+file = "glow-1.0.0.sshader"
+sha256 = "a23c5fe9fd173243704dd51160f20f35927c6e0060c5541ce1823f25db8c7961"
+"#;
+
 const REVOKED_TOML: &str = r#"[[revoked]]
 id = "bad_mod"
 sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
@@ -95,11 +116,16 @@ impl Scratch {
         let s = Scratch(dir);
         s.write("mods/coords_hud.toml", &hud_entry());
         s.write("mods/cozy.toml", COZY);
+        s.write("mods/glow.toml", GLOW);
         s.write("revoked.toml", REVOKED_TOML);
-        for icon in ["coords_hud", "cozy"] {
+        for icon in ["coords_hud", "cozy", "glow"] {
             s.write_bytes(&format!("icons/{icon}.png"), &png(128, 128));
         }
-        for (name, hash) in [("coords_hud-0.1.0.smod", SMOD), ("cozy-1.0.0.spack", SPACK)] {
+        for (name, hash) in [
+            ("coords_hud-0.1.0.smod", SMOD),
+            ("cozy-1.0.0.spack", SPACK),
+            ("glow-1.0.0.sshader", SSHADER),
+        ] {
             std::fs::copy(fixtures().join(name), s.0.join("files").join(hash)).unwrap();
         }
         s
@@ -141,7 +167,7 @@ fn builds_the_sample_index() {
     let s = Scratch::new("sample");
     let built = s.build().unwrap();
     let sample = sample();
-    assert_eq!(built.projects, sample.projects[..2]);
+    assert_eq!(built.projects, sample.projects[..3]);
     assert_eq!(built.revoked, sample.revoked);
     assert_eq!(built.generated, sample.generated);
     // What it writes reads back.
@@ -150,13 +176,13 @@ fn builds_the_sample_index() {
 
 #[test]
 fn a_stable_source_file_has_its_kinds_extension() {
-    let mut entry: Entry = toml::from_str(COZY).unwrap();
-    entry.source = "https://github.com/author/cozy".into();
+    let mut entry: Entry = toml::from_str(GLOW).unwrap();
+    entry.source = "https://github.com/author/glow".into();
     let mut row = entry.versions[0].clone();
     row.sunrise = Some("26.3-0.1.0".into());
-    let asset = "https://github.com/author/cozy/releases/download/v1.0.0/cozy-1.0.0";
-    row.file = format!("{asset}.spack");
-    assert_eq!(entry.source_file_name(&row), Ok("cozy-1.0.0.spack"));
+    let asset = "https://github.com/author/glow/releases/download/v1.0.0/glow-1.0.0";
+    row.file = format!("{asset}.sshader");
+    assert_eq!(entry.source_file_name(&row), Ok("glow-1.0.0.sshader"));
     row.file = format!("{asset}.smod");
     assert!(entry.source_file_name(&row).is_err());
     entry.kind = Kind::Other("future-pack".into());
@@ -306,11 +332,7 @@ fn lists_every_problem_of_a_registry() {
         "{errors:?}"
     );
     assert!(has("coords_hud 0.1.0: the project has a key"), "{errors:?}");
-    // A shader entry is refused as its kind, and its file is checked like the others.
-    assert!(
-        has("glow: the registry doesn't take shader yet"),
-        "{errors:?}"
-    );
+    // A shader entry is taken now, and checked like the others.
     assert!(
         has("glow 1.0.0: the file isn't the one its sha256 names"),
         "{errors:?}"
@@ -328,7 +350,7 @@ fn lists_every_problem_of_a_registry() {
         has("other: its icon \"icons/coords_hud.png\""),
         "{errors:?}"
     );
-    assert_eq!(errors.len(), 8, "{errors:?}");
+    assert_eq!(errors.len(), 7, "{errors:?}");
 }
 
 #[test]
@@ -945,12 +967,9 @@ fn page_fields_and_screenshots_reach_the_index() {
 #[test]
 fn only_open_kinds_are_taken() {
     assert!(open(&Kind::Mod).is_ok() && open(&Kind::ResourcePack).is_ok());
-    assert!(open(&Kind::ShaderPack).is_ok() && open(&Kind::DataPack).is_ok());
+    assert!(open(&Kind::Shader).is_ok() && open(&Kind::ShaderPack).is_ok());
+    assert!(open(&Kind::DataPack).is_ok());
     assert!(open(&Kind::Other("world".into())).is_err());
-    assert_eq!(
-        open(&Kind::Other("shader".into())),
-        Err("the registry doesn't take shader yet".into())
-    );
     let mut submit: Entry = toml::from_str(COZY).unwrap();
     let dir = std::env::temp_dir();
     let src = Sources {

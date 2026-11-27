@@ -843,7 +843,7 @@ mod tests {
             auto.event(100, lost, Some(Pq));
             auto.frames(100, 390);
             assert_eq!(auto.applied, fresh, "{lost:?}");
-            assert!(auto.applied.requests_hdr(HdrMode::Auto) && auto.applied.hdr_on());
+            assert!(auto.applied.requests_hdr(HdrMode::Auto) && auto.applied.display().hdr);
             auto.event(400, Some(true), Some(Pq));
             auto.frames(400, 1500);
             assert_eq!((auto.applied, auto.since), (fresh, None), "{lost:?}");

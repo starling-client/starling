@@ -147,6 +147,12 @@ pub struct Renderer {
     /// (`crosshair_globals`).
     pub(crate) crosshair_group: wgpu::BindGroup,
     pub(crate) crosshair_globals: wgpu::Buffer,
+    /// The water mirror: its solid terrain pipeline, its camera's globals and their group,
+    /// and its targets once drawn.
+    pub(crate) solid_mirror: wgpu::RenderPipeline,
+    pub(crate) mirror_globals: wgpu::Buffer,
+    pub(crate) mirror_group: wgpu::BindGroup,
+    pub(crate) mirror: Option<MirrorTarget>,
     /// Native mods' world views' targets and pipelines, and the largest side the device gives one.
     pub(crate) world_views: world_views::Kept,
     pub(crate) world_view_side: u32,
@@ -223,7 +229,7 @@ pub struct Renderer {
     pub(crate) screen_buffer: wgpu::Buffer,
     pub(crate) screen_capacity: u64,
     pub(crate) entity_group: wgpu::BindGroup,
-    /// The layout of `entity_group`.
+    /// The layout of `entity_group`, for the native shadow pass.
     pub(crate) entity_bindings: wgpu::BindGroupLayout,
     /// Generation-owned prepared model geometry. World block entities instance it
     /// when the draw is not kept, spinning, or claimed by a shader pack.
@@ -430,6 +436,9 @@ pub struct Renderer {
     pub(crate) newest_lod_fade: Option<std::time::Instant>,
     /// Changes whenever `block_entities` does (unique across renderers).
     pub(crate) block_entity_revision: u64,
+    /// The light sources of each section and their revision, for `block_light`.
+    pub(crate) light_blocks: super::census::SectionLists,
+    pub(crate) light_revision: u64,
     /// VisGraph face connectivity per meshed section (cave culling).
     pub(crate) occlusion: occlusion::Occlusion,
     /// The column `occlusion`, `sections` and `detail_columns` count in: the
@@ -459,6 +468,9 @@ pub struct Renderer {
     /// `LINEAR_FRAME` (`frame_format`). A 16-bit frame with HDR off since reaches the
     /// swapchain through `readback`.
     pub(crate) output: output::EffectiveOutput,
+    /// Whether a pack picked or dropped since the renderer was made has been told it runs on
+    /// the frame that exists (`set_native_shader_pack`).
+    pub(crate) frame_kept_logged: bool,
     /// The marker file of an HDR output that has not presented a frame yet
     /// (`graphics::HDR_MARKER`).
     pub(crate) hdr_marker: Option<std::path::PathBuf>,
@@ -475,6 +487,8 @@ pub struct Renderer {
     pub(crate) pack_loading: Option<PackLoading>,
     /// Counts shader packs loaded, switched or turned off (`ShaderPackState::generation`).
     pub(crate) pack_generation: u32,
+    /// The post passes of one of Sunrise's own shader packs; never beside `pack_post`'s.
+    pub(crate) native: Option<native_pack::NativePack>,
     /// Time the shader pack's passes on the GPU (F3, or a capture made with `--gpu`).
     pub(crate) pass_timing: bool,
     /// Times the parts of passes too (`set_pass_detail`).

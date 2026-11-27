@@ -73,6 +73,14 @@ impl<'a> MeshFacts<'a> {
         }
     }
 }
+/// The water mirror's targets: the world as a camera mirrored about the water plane sees
+/// it, at half the world's resolution (the material stage's `reflection`).
+pub(crate) struct MirrorTarget {
+    pub(super) size: [u32; 2],
+    pub(super) color: wgpu::TextureView,
+    pub(super) depth: wgpu::TextureView,
+}
+
 /// Not before then may a large translucent page start to shrink.
 #[derive(Default)]
 pub(crate) struct ShrinkGate(pub(super) Option<Instant>);
@@ -138,6 +146,10 @@ pub struct Frame<'a> {
     /// `Camera.depthFar`: the far plane (`crate::camera::depth_far`).
     pub depth_far: f32,
     pub underwater: bool,
+    /// The y of the horizontal water plane around the camera, in world blocks, while one
+    /// of Sunrise's own packs reads the water mirror (`Game::water_plane`,
+    /// `Renderer::wants_water_plane`).
+    pub water_plane: Option<f32>,
     /// Skip sections the camera cannot see through open faces (vanilla's
     /// occlusion graph; off in spectator-like views inside blocks).
     pub cave_culling: bool,

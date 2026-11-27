@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Horizon -> Sunrise in the tracked files' contents and paths, and the package extensions .hmod and
-.hpack -> .smod and .spack; then run cargo fmt and let Cargo re-sort lockfiles. Usage: tools/rebrand.py [--dry-run]"""
+"""Horizon -> Sunrise in the tracked files' contents and paths, and the package extensions .hmod, .hpack and
+.hshader -> .smod, .spack and .sshader; then run cargo fmt and let Cargo re-sort lockfiles. Usage: tools/rebrand.py [--dry-run]"""
 import os
 import re
 import subprocess
@@ -53,7 +53,7 @@ LICENCE_LINE = re.compile(r"(?i)copyright|MIT[- ]licen[cs]e|MIT licensed|MIT-Hor
 KEEP_LINE = re.compile(r'through the rename|Horizon\'s name, kept|before the Sunrise rename|"playhorizon\.dev": "playsunrise\.net"|^\s+"mods/horizon/src/", "mods/horizon-lab/src/"\)\):|sunriselab/" in path or "/dev/horizonlab/"')
 LICENCE_PATH = re.compile(r"(^|/)(LICENSES/[^/]*|[^/]*LICEN[CS]E[^/]*)$")
 # Sunrise's package extensions, as a whole word in any spelling (`.hmod`, `"hmod"`, `hmod_path`, `HMOD`; never `chmod`).
-PACKAGE = re.compile(r"(?<![A-Za-z0-9])([Hh])(mod|pack|MOD|PACK)(?![A-Za-z0-9])")
+PACKAGE = re.compile(r"(?<![A-Za-z0-9])([Hh])(mod|pack|shader|MOD|PACK|SHADER)(?![A-Za-z0-9])")
 # The journal is history, and roadmap.json is generated from it.
 PACKAGE_SKIP = re.compile(r"^roadmap/journal/|^roadmap/roadmap\.json$")
 

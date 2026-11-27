@@ -141,6 +141,39 @@ pub struct FrameConfiguration {
     pub(crate) linear_light: bool,
 }
 
+/// The display a 0.2 pack's `Frame` describes (docs/api/shaders-reference-0.2.md).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DisplayValues {
+    pub hdr: bool,
+    /// The peak over paper white, at least 1.
+    pub headroom: f32,
+    pub paper_white: f32,
+    pub peak: f32,
+    pub black_level: f32,
+}
+impl DisplayValues {
+    pub const SDR: Self = Self {
+        hdr: false,
+        headroom: 1.0,
+        paper_white: 80.0,
+        peak: 80.0,
+        black_level: 0.0,
+    };
+    /// The values HDR output's last pass maps to: the headroom never below 1, and the black
+    /// level never above paper white.
+    fn hdr([paper_white, peak, black]: [f32; 3]) -> Self {
+        let paper_white = paper_white.max(1.0);
+        let headroom = (peak / paper_white).max(1.0);
+        Self {
+            hdr: true,
+            headroom,
+            paper_white,
+            peak: paper_white * headroom,
+            black_level: black.clamp(0.0, paper_white),
+        }
+    }
+}
+
 /// One renderer's output as applied, with what its destination offers and reports.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EffectiveOutput {
@@ -189,11 +222,17 @@ impl EffectiveOutput {
         ui_brightness: 1.0,
         pack_lights: false,
     };
-    /// This output under the running shader pack: a `shaders/` one (`shaders`) lights the world
-    /// itself, so Sunrise lifts nothing of it.
-    pub(crate) fn with_pack(self, shaders: bool) -> Self {
+    /// This output under the running shader pack: a `shaders/` one (`shaders`), or one of
+    /// Sunrise's own of API `native`. Under a 0.1 pack on the 8- or 16-bit frame the last pass
+    /// still lifts the light sources and the sun its marks hold (`lifts_world` in
+    /// `Renderer::render`); under the rest Sunrise lifts nothing.
+    pub(crate) fn with_pack(self, shaders: bool, native: Option<sunrise_shader_api::Api>) -> Self {
+        let pack_lights = shaders
+            || native.is_some_and(|api| {
+                api != sunrise_shader_api::Api::V0_1 || self.frame.format == super::LINEAR_FRAME
+            });
         Self {
-            pack_lights: shaders,
+            pack_lights,
             ..self
         }
     }
@@ -211,9 +250,20 @@ impl EffectiveOutput {
     pub fn requests_hdr(&self, mode: HdrMode) -> bool {
         !self.held && requests_hdr(mode, self.offered.is_some(), self.system_hdr)
     }
+    /// What a 0.2 pack's `Frame` describes: the HDR display on the layered frame, whose
+    /// picture is light; SDR otherwise, where the frame holds SDR's picture, the one HDR
+    /// output's last pass expands.
+    pub(crate) fn display(&self) -> DisplayValues {
+        if self.encoding.is_some() && self.frame.hud_layer {
+            DisplayValues::hdr(self.nits)
+        } else {
+            DisplayValues::SDR
+        }
+    }
     /// What a scaled screenshot's frame is drawn for (`Renderer::draw_scaled_frame`): the
-    /// layered frame keeps HDR, whose world light and HUD layer make the screenshot; any other
-    /// frame is drawn without HDR, into a target of its own, SDR.
+    /// layered frame keeps HDR, whose world light and HUD layer make the screenshot, so a 0.2
+    /// pack reads this display as every other frame does; any other frame is drawn without
+    /// HDR, into a target of its own, SDR.
     pub(crate) fn scaled_screenshot(self) -> Self {
         Self {
             encoding: self.encoding.filter(|_| self.frame.hud_layer),
@@ -298,10 +348,19 @@ pub(crate) fn resolve_output(
 }
 
 /// Whether HDR output lifts the world's light-source marks above paper white. Not on the title
-/// screen or the float frame, and not under a `shaders/` pack, whose `final` pass leaves its
-/// own alpha in the frame, which isn't marks (HDR lighting is off under it too).
-pub(crate) fn lifts_world(title: bool, float_frame: bool, shaders_pack: bool) -> bool {
-    !title && !float_frame && !shaders_pack
+/// screen or the float frame, and not under a pack that lights its world itself: a 0.2 pack is
+/// shown at paper white, and a `shaders/` pack's `final` pass leaves its own alpha in the
+/// frame, which isn't marks (HDR lighting is off under it too).
+pub(crate) fn lifts_world(
+    title: bool,
+    float_frame: bool,
+    shaders_pack: bool,
+    native_api: Option<sunrise_shader_api::Api>,
+) -> bool {
+    !title
+        && !float_frame
+        && !shaders_pack
+        && native_api.is_none_or(|api| api == sunrise_shader_api::Api::V0_1)
 }
 
 #[cfg(test)]
@@ -346,22 +405,25 @@ pub(crate) mod tests {
         resolve_output(settings, caps, reading, frame, true)
     }
 
-    /// HDR output lifts light-source marks only on the 8/16-bit frame's world with no pack: a
-    /// `shaders/` pack's alpha isn't marks.
+    /// HDR output lifts light-source marks only on the 8/16-bit frame's world with no pack or
+    /// a 0.1 pack: a `shaders/` pack's alpha isn't marks, and a 0.2 pack is shown at paper white.
     #[test]
     fn only_sunrises_own_gamma_world_is_lifted() {
-        // (title, float frame, `shaders/` pack) -> lifts
+        use sunrise_shader_api::Api::{V0_1, V0_2};
+        // (title, float frame, `shaders/` pack, Sunrise pack) -> lifts
         let cases = [
-            ((false, false, false), true),
-            ((false, false, true), false),
-            ((false, true, false), false),
-            ((true, false, false), false),
+            ((false, false, false, None), true),
+            ((false, false, false, Some(V0_1)), true),
+            ((false, false, true, None), false),
+            ((false, false, false, Some(V0_2)), false),
+            ((false, true, false, None), false),
+            ((true, false, false, None), false),
         ];
-        for ((title, float, shaders), lifts) in cases {
+        for ((title, float, shaders, api), lifts) in cases {
             assert_eq!(
-                lifts_world(title, float, shaders),
+                lifts_world(title, float, shaders, api),
                 lifts,
-                "title {title}, float {float}, shaders/ pack {shaders}"
+                "title {title}, float {float}, shaders/ pack {shaders}, pack {api:?}"
             );
         }
     }
@@ -428,6 +490,12 @@ pub(crate) mod tests {
                                 assert_eq!(out.encoding, encoding, "{case}");
                                 assert_eq!(out.requests_hdr(mode), wanted, "{case}");
                                 assert_eq!((out.offered, out.system_hdr), (hdr, system), "{case}");
+                                // A 0.2 pack sees the HDR display only on the layered frame.
+                                assert_eq!(
+                                    out.display().hdr,
+                                    encoding.is_some() && layered,
+                                    "{case}"
+                                );
                             }
                         }
                     }
@@ -706,10 +774,10 @@ pub(crate) mod tests {
         assert_eq!(stopped.reported, window_reading.luminance);
     }
 
-    /// A scaled screenshot of the layered frame keeps HDR; the 16-bit and the 8-bit frames shoot
-    /// SDR, as do SDR windows.
+    /// A scaled screenshot of the layered frame keeps HDR, and a 0.2 pack reads the window's
+    /// display in it, not SDR's; the 16-bit and the 8-bit frames shoot SDR, as do SDR windows.
     #[test]
-    fn a_scaled_screenshot_keeps_hdr_only_on_the_layered_frame() {
+    fn a_scaled_screenshot_keeps_the_display_only_on_the_layered_frame() {
         let on = Graphics {
             hdr: HdrMode::On,
             ..Graphics::default()
@@ -717,16 +785,35 @@ pub(crate) mod tests {
         let no_pack = FrameRequest::new().with_hdr_float(true);
         let (caps, reading) = window(Some(Output::Pq), Some(true));
         let layered = snapshot(&on, no_pack, caps, reading);
-        assert!(layered.frame.hud_layer);
+        assert!(layered.frame.hud_layer && layered.display().hdr);
         let shot = layered.scaled_screenshot();
         assert_eq!(shot.encoding, Some(Output::Pq));
+        assert_eq!(shot.display(), layered.display());
         for out in [
             snapshot(&on, FrameRequest::default(), caps, reading),
             snapshot(&Graphics::default(), no_pack, caps, reading),
         ] {
             let shot = out.scaled_screenshot();
-            assert_eq!(shot.encoding, None);
+            assert_eq!((shot.encoding, shot.display()), (None, DisplayValues::SDR));
             assert_eq!(shot.frame, out.frame);
         }
+    }
+
+    /// What a 0.2 pack reads of the display: the headroom the tone curve eases into, never
+    /// below 1, and the black Sunrise lifts after it, never above paper white.
+    #[test]
+    fn the_display_a_pack_reads_is_the_one_the_curve_maps_to() {
+        let d = DisplayValues::hdr([203.0, 1000.0, 0.05]);
+        assert_eq!(
+            (d.headroom, d.paper_white, d.black_level),
+            (1000.0 / 203.0, 203.0, 0.05)
+        );
+        assert!((d.peak - 1000.0).abs() < 1e-3, "{}", d.peak);
+        // A peak under paper white has no headroom: the display tops out at white.
+        let d = DisplayValues::hdr([203.0, 150.0, 400.0]);
+        assert_eq!(
+            (d.headroom, d.paper_white, d.peak, d.black_level),
+            (1.0, 203.0, 203.0, 203.0)
+        );
     }
 }

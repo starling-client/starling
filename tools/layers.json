@@ -59,6 +59,7 @@
     "sunrise-polytone": "platform",
     "sunrise-port-pack": "platform",
     "sunrise-jar-fetch": "platform",
+    "sunrise-shader-api": "platform",
     "sunrise-render-shaderpack": "engine",
     "sunrise-shaders": "platform",
     "sunrise-theme": "platform",
@@ -146,20 +147,28 @@
       "winit"
     ]
   },
-  "optional": [],
+  "optional": [
+    {
+      "edge": "sunrise-mod-package -> sunrise-shader-api",
+      "reason": "The optional `index` feature validates shader packages in the registry index; the portable crates take sunrise-mod-package without it."
+    }
+  ],
   "allowed": [
     "sunrise-client -> sunrise-dualsense",
     "sunrise-client -> sunrise-friends",
     "sunrise-client -> sunrise-optifine",
+    "sunrise-client -> sunrise-shader-api",
     "sunrise-client -> sunrise-shaders",
     "sunrise-client -> sunrise-theme",
     "sunrise-client-lib -> sunrise-mcp",
     "sunrise-client-lib -> sunrise-optifine",
+    "sunrise-client-lib -> sunrise-shader-api",
     "sunrise-client-lib -> sunrise-shaders",
     "sunrise-client-lib -> sunrise-telemetry",
     "sunrise-client-render -> sunrise-hdr",
     "sunrise-client-render -> sunrise-optifine",
     "sunrise-client-render -> sunrise-polytone",
+    "sunrise-client-render -> sunrise-shader-api",
     "sunrise-client-render -> sunrise-shaders",
     "sunrise-render-shaderpack -> sunrise-shaders",
     "sunrise-native-build -> sunrise-mod-package",

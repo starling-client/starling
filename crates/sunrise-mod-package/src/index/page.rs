@@ -120,7 +120,7 @@ pub fn categories(kind: &Kind) -> &'static [&'static str] {
         Kind::Mod | Kind::NativeMod | Kind::DataPack => MODS,
         Kind::Modpack => MODPACKS,
         Kind::ResourcePack => RESOURCE_PACKS,
-        Kind::ShaderPack => SHADERS,
+        Kind::Shader | Kind::ShaderPack => SHADERS,
         Kind::Other(_) => &[],
     }
 }
@@ -368,7 +368,7 @@ mod tests {
         // A shader category on a mod, a repeat, and one too many.
         let wrong = check(&Kind::Mod, "", &strings(&["bloom"]), &[]);
         assert!(wrong[0].contains("not a category of a mod"), "{wrong:?}");
-        let twice = check(&Kind::ShaderPack, "", &strings(&["pbr", "pbr"]), &[]);
+        let twice = check(&Kind::Shader, "", &strings(&["pbr", "pbr"]), &[]);
         assert_eq!(twice, ["category \"pbr\" is listed twice"]);
         let many = check(
             &Kind::Mod,

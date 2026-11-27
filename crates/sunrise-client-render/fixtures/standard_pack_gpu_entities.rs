@@ -893,6 +893,20 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
     ordering_frame.eye_rotation = [0.0; 2];
     feature_stage_order(&mut renderer, ordering_frame, out)?;
 
+    // A native sky uses the same no-pass notification boundary, even with its own timing pass.
+    use sunrise_shader_api::{MANIFEST, Pack, check};
+    let files = [
+        (MANIFEST, "schema = 1\nid = \"test\"\nname = \"Test\"\nversion = \"1\"\napi = \"0.1\"\n[sky]\nfile = \"sky.wgsl\"\n"),
+        ("sky.wgsl", "fn sky(input: SkyInput) -> vec4<f32> { return input.color; }"),
+    ].map(|(name, text)| (name.to_owned(), text.as_bytes().to_vec())).into();
+    let report = check(&Pack::from_files(files).expect("native sky pack")).expect("valid sky");
+    renderer.set_native_shader_pack(Some((report, vec![], vec![], vec![], Default::default())))?;
+    renderer.set_pass_timing(true);
+    let mut native_sky_hooks = WorldStageProbe::default();
+    renderer.render(&frame, Some(&mut native_sky_hooks))?;
+    assert_eq!(native_sky_hooks.stages.first(), Some(&Stage::AfterSky));
+    assert_eq!(native_sky_hooks.prepared_after_sky, Some(true));
+
     std::fs::write(
         out.join("result.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
@@ -1034,6 +1048,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         shadow_distance: None,
         depth_far: 1000.0,
         underwater: false,
+        water_plane: None,
         cave_culling: false,
         title: true,
         sky_pass: false,

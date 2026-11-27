@@ -76,10 +76,9 @@ impl Renderer {
     }
 
     /// Whether the world builds ray-tracing structures this frame: an armed
-    /// device plus a running ray-tracing pack. Only Sunrise's own (WGSL) packs
-    /// read them, and Sunrise removed that format: no pack does now, and the
+    /// device plus a running ray-tracing pack. Without a pack reading it the
     /// world builds no structures at all.
     pub(super) fn rt_enabled(&self) -> bool {
-        false
+        self.ray_tracing() && self.native.as_ref().is_some_and(|n| n.ray_tracing)
     }
 }

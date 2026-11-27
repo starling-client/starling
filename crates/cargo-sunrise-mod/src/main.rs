@@ -20,7 +20,7 @@
 //! - `check [--uses] [--release <tag>]` in a mod folder: the package rules, page and render pipeline
 //!   shaders; for a native mod, Rust and what the mod uses of its pinned build (`sdk_cmds.rs`).
 //! - `check <file> [--kind <kind>] [--attestation <bundle>] [--repository <id>] [--json]`: check a release package
-//!   (`.smod`, `.spack`, resource pack `.zip`).
+//!   (`.smod`, `.spack`, resource pack `.zip`, `.sshader`).
 //! - `hooks <text> [--all]`: search the pinned build's hooks (or every item) offline.
 //! - `sdk diff <build> <build>`: what changed in the surface between two builds.
 //! - `check [<file.smod>] --build <name> [--build <name>]…`: whether the mod fits each build; exit 0 when all

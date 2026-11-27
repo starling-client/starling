@@ -84,7 +84,7 @@ needed, the spec team records the observation (what was seen, with which pack an
 
 ## Since publication (2026-11-08)
 
-- The implementation is `crates/sunrise-shaders` ([docs/shaders.md](../shaders.md) covers using packs in the game).
+- The implementation is `crates/sunrise-shaders` ([docs/shaders.md](../shaders.md) covers Sunrise's own WGSL packs).
   Its first slices were written by the implementation team above; later contributors did not have the spec, which
   was private until now.
 - Not published: the implementer's question files and the implementation plan, which were working notes.

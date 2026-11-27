@@ -1035,7 +1035,8 @@ impl Renderer {
             self.pack_reads_pages(),
             // A pack still building draws what its programs will (`pack_pending`).
             pending.terrain || pack.is_some_and(|p| p.has_terrain()),
-            pending.shadow || pack.is_some_and(|p| p.has_shadow()),
+            // One of Sunrise's own packs with `[shadow]` draws from the same lists (`shadow_view`).
+            pending.shadow || pack.is_some_and(|p| p.has_shadow()) || self.native_shadow(),
         );
         if split == self.translucent_arena.is_some() {
             return;
@@ -1319,6 +1320,9 @@ impl Renderer {
                 block_entities |= self.block_entities.remove(&key);
                 self.block_entity_section_revisions.remove(&key);
                 self.block_entity_membership_revisions.remove(&key);
+                if self.light_blocks.remove(&key) {
+                    self.light_revision += 1;
+                }
                 self.section_uploaded.remove(&key);
                 if retiring {
                     // Distant tiles still leave its column out: drawn until they don't.
@@ -1357,6 +1361,9 @@ impl Renderer {
         if self.block_entities.len() != before {
             self.block_entity_revision = next_block_entity_revision();
         }
+        let before = self.light_blocks.len();
+        self.light_blocks.retain(kept);
+        self.light_revision += (before - self.light_blocks.len()) as u64;
         self.section_uploaded.retain(|key, _| kept(key));
         let released = self.sections.remove_columns(&gone);
         for &(x, z) in columns {

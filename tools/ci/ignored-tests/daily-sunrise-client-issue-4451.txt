@@ -1505,7 +1505,7 @@ sunrise-client game::native_hooks::on_entity_item_update::on_entity_item_update_
 sunrise-client game::native_hooks::particle_count_tests::a_client_mod_counts_and_clears_particles lib daily resources
 sunrise-client game::native_hooks::particle_count_tests::a_model_callback_clear_discards_particle_geometry_already_extracted lib daily resources
 sunrise-client game::native_hooks::particle_count_tests::fog_clear_reaches_the_complete_frame_consumer lib daily resources
-sunrise-client game::native_hooks::particle_count_tests::late_clear_rolls_back_particle_geometry_at_the_frame_consumer lib daily resources
+sunrise-client game::native_hooks::particle_count_tests::late_clear_removes_native_particle_lights_at_the_frame_consumer lib daily resources
 sunrise-client game::native_hooks::particle_count_tests::late_gui_clear_prevents_same_frame_particle_geometry_without_a_tick lib daily resources
 sunrise-client game::native_hooks::piston_push_reaction_tests::piston_push_reaction_client_received_tags_refresh_the_cache lib daily resources
 sunrise-client game::native_hooks::piston_push_reaction_tests::piston_push_reaction_parts_cache_reload_and_replay lib daily resources

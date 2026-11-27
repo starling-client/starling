@@ -114,6 +114,7 @@ READERS = {
     # Starling's own crates: the account tests read the research lock, the catalog its launcher's sources.
     "starling-account": ["research-lock.json"],
     "starling-catalog": ["launcher/src"],
+    "sunrise-shader-api": ["docs/api/shaders-reference.md", "docs/api/shaders-reference-0.2.md"],
     # Its daily stable-release test drives the release gate's Python through the real surface differ.
     "sunrise-stage": [
         "tests/stable_mod_api_integration.py", "tests/test_stable_mod_api.py", "tools/ci/nightly.py",

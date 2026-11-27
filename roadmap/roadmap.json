@@ -381,6 +381,24 @@
    "shipped_in": "v0.2.67"
   },
   {
+   "id": "native-shaders",
+   "title": "Sunrise's own shader format and kit",
+   "status": "shipped",
+   "area": "rendering",
+   "plain": "Sunrise's own way to make shader packs, with tools to write and test them. Every pack is checked before it runs, and the registry will list them.",
+   "dev": "`sunrise-shader-api` (API 0.1, experimental): WGSL stages with typed inputs inside the renderer's passes, options as WGSL override constants, and the `sunrise-shader new|check|pack` tool with templates and the example pack Golden Hour. Merged: the check every pack passes (#1820) and the tool, templates and guide (#1822). In review: the post stage running in the game with hot reload (#1861), the sky stage (#1863) and registry checks that use the game's own check (#1855). Left: the material, lighting and shadow stages, a last-good fallback on reload, a GPU-time overlay per stage and budgets (docs/shaders.md, docs/api/shaders.md). The Iris/OptiFine loader is a separate item, 'Shader packs, written again from scratch'.",
+   "links": [
+    "#1820",
+    "#1822",
+    "#1861",
+    "#1863",
+    "#1855",
+    "docs/shaders.md",
+    "docs/api/shaders.md"
+   ],
+   "shipped_in": "v0.2.70"
+  },
+  {
    "id": "server-dialogs",
    "title": "Server dialogs and login screens",
    "status": "shipped",
@@ -1090,10 +1108,11 @@
    "title": "Well-known shader looks, rewritten for Sunrise",
    "status": "later",
    "area": "rendering",
-   "plain": "Popular shader packs rewritten as Iris/OptiFine-format packs, so good packs exist from the start. Only packs whose licence is open source and compatible with ours are rewritten, never anything else.",
-   "dev": "The first candidates are Photon, Chocapic13 and MakeUp Ultra Fast, each only after its licence is read and recorded: a pack is rewritten only if it is open source and compatible with Sunrise's licence, and the rewrite is written from the shader format's documentation and the look on screen, not from anyone's code.",
+   "plain": "Popular shader packs rewritten in Sunrise's format, so good packs exist from the start. Only packs whose licence is open source and compatible with ours are rewritten, never anything else.",
+   "dev": "The first candidates are Photon, Chocapic13 and MakeUp Ultra Fast, each only after its licence is read and recorded: a pack is rewritten only if it is open source and compatible with Sunrise's licence, and the rewrite is written from the shader format's documentation and the look on screen, not from anyone's code. Today only the Golden Hour example exists (`crates/sunrise-shader-api/packs/golden_hour`).",
    "links": [
-    "docs/shaders.md"
+    "docs/shaders.md",
+    "crates/sunrise-shader-api/packs/golden_hour"
    ]
   },
   {

@@ -46,6 +46,8 @@ sunrise-java-properties = { path = "../sunrise-java-properties" }
 getrandom = "0.3"
 # Shader packs: reading them and turning their GLSL into naga modules.
 sunrise-shaders = { path = "../sunrise-shaders" }
+# Sunrise's own shader packs: the format, the stages and the check (docs/shaders.md).
+sunrise-shader-api = { path = "../sunrise-shader-api" }
 # The narrator (GameNarrator): text-to-speech of chat, system messages and screens.
 sunrise-narrator = { path = "../sunrise-narrator" }
 # Sunrise mods: native code and content packages (docs/modding/src/how-to/content-mods.md).

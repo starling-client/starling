@@ -1447,8 +1447,8 @@ pub(crate) trait Screen {
     }
     /// A slider row moved to `position`.
     fn slide(&mut self, _s: &mut Settings, _row: Self::Row, _position: f64) {}
-    /// A slider let go of, or stepped by a key: what its change does now that it is done (not
-    /// on every move of a drag).
+    /// A slider let go of, or stepped by a key: what its change does now that it is done (a
+    /// Sunrise shader pack saves its options once a drag, not on every move).
     fn slider_released(&mut self) -> Vec<Output> {
         Vec::new()
     }

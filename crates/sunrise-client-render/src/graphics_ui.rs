@@ -30,7 +30,7 @@ pub enum Page {
     Display,
     Quality,
     Performance,
-    /// Shader packs (`shader_pack_list`), and what they cost.
+    /// Shader packs, either kind (`shader_pack_list`), and what they cost.
     Shaders,
     Advanced,
     /// HDR output's own settings.

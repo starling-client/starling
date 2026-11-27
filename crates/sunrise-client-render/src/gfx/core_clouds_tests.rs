@@ -4,6 +4,7 @@ const ALL: CloudsFrame = CloudsFrame {
     pack_shader: true,
     pack_oit_shader: true,
     clouds: true,
+    native_clouds: true,
     improved_transparency: false,
     shader_pack: false,
     title: false,
@@ -34,6 +35,10 @@ fn a_packs_clouds_draw_only_where_nothing_else_draws_them() {
         },
         CloudsFrame {
             clouds: false,
+            ..ALL
+        },
+        CloudsFrame {
+            native_clouds: false,
             ..ALL
         },
         CloudsFrame {
@@ -960,7 +965,11 @@ fn the_improved_transparency_groups_follow_new_targets_and_a_grown_faces_buffer(
 /// (`oit_clouds`). `(classic pack, classic native, OIT stages)`.
 fn picked(frame: CloudsFrame) -> (bool, bool, Option<&'static str>) {
     let pack_quads = frame.pack_draws().then_some(4);
-    let native_quads = if native_mesh(pack_quads) { 6 } else { 0 };
+    let native_quads = if native_mesh(frame.native_clouds, pack_quads) {
+        6
+    } else {
+        0
+    };
     let oit = frame.improved_transparency;
     let pack = pack_quads.is_some_and(|q| classic_pass_draws(q, frame.shader_pack, oit));
     let native = classic_pass_draws(native_quads, frame.shader_pack, oit);
