@@ -227,7 +227,6 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         (&zero[..], 1),
         Arc::new(Faces::colour([0, 0, 0, 255])),
         Some(prepared),
-        None,
         sunrise_client_render::gfx::RendererDevice::New,
         settings.graphics_api(),
         settings.translucent_batching,

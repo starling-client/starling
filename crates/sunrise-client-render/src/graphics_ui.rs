@@ -1266,10 +1266,7 @@ impl Item {
             && !matches!(
                 self,
                 Item::Sunrise(
-                    H::HdrCalibrate
-                        | H::PerfCalibrate
-                        | H::PerfCalibrateNote
-                        | H::GpuDrivers
+                    H::HdrCalibrate | H::PerfCalibrate | H::PerfCalibrateNote | H::GpuDrivers
                 )
             )
     }

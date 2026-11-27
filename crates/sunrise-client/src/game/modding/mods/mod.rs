@@ -2189,7 +2189,10 @@ fn not_built(
         if !package.is_native() {
             continue;
         }
-        let (id, version) = (package.manifest.id.clone(), package.manifest.version.clone());
+        let (id, version) = (
+            package.manifest.id.clone(),
+            package.manifest.version.clone(),
+        );
         let listed = rows.iter().chain(&out).any(|row| row.id == id);
         if !listed && !built.iter().any(|b| b.id == id) {
             out.push(Installed {

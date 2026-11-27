@@ -8,14 +8,9 @@ use key_codes::{
 // `entry` starts the game from `game::Options`, so this one is named outside the module too.
 pub(crate) use launch_options::Options;
 #[cfg(not(target_os = "android"))]
-use loading_screen::missing_resources;
+use loading_screen::preflight_resources;
 use loading_screen::{
-<<<<<<< ours
     App, Loading, event_loop, leave_fullscreen_after, run_event_loop, unclean_start_recovery,
-=======
-    App, Loading, leave_fullscreen_after, preflight_resources, run_event_loop,
-    unclean_start_recovery,
->>>>>>> theirs
 };
 use motion_ids::{motion_at, motion_block_entity};
 #[cfg(test)]
@@ -2254,14 +2249,11 @@ mod server_travel;
 #[cfg(test)]
 #[path = "game/administration/setblock_order_tests.rs"]
 mod setblock_order_tests;
-<<<<<<< ours
 #[path = "game/starling/setup/mod.rs"]
 mod setup;
-=======
 #[cfg(test)]
 #[path = "game/interface/shader_pack_switch_tests.rs"]
 mod shader_pack_switch_tests;
->>>>>>> theirs
 #[path = "game/interface/shader_packs.rs"]
 mod shader_packs;
 #[cfg(test)]
@@ -2534,13 +2526,10 @@ mod wither;
 #[cfg(test)]
 #[path = "game/mobs/wither_star_tests.rs"]
 mod wither_star_tests;
-<<<<<<< ours
-#[path = "game/starling/world_content.rs"]
-mod world_content;
-=======
 #[path = "game/world/world_border.rs"]
 mod world_border;
->>>>>>> theirs
+#[path = "game/starling/world_content.rs"]
+mod world_content;
 #[path = "game/world/world_entry.rs"]
 mod world_entry;
 #[cfg(test)]
@@ -4289,13 +4278,10 @@ struct Game<'a> {
     /// and mannequins) resolve through the services in the background.
     skin_profiles: RefCell<sunrise_client::skins::Resolver>,
     skin_slots: sunrise_client::skins::SkinSlots,
-<<<<<<< ours
     /// The player's own skin from Options > Skin Customization (game/own_skin.rs).
     own_skin: own_skin::OwnSkin,
-=======
     /// What `apply_player_skin_override` resolved for the selected dynamic texture.
     player_skin_slot: Option<native_hooks::resolve_player_skin::PlayerSkinSlot>,
->>>>>>> theirs
     /// Runtime trim slots and the last completed preparation for this atlas.
     trim_slots: sunrise_client::trims::TrimSlots,
     cart_models: minecarts::CartModels,
@@ -7960,20 +7946,7 @@ impl Game<'_> {
         } else {
             self.hud_layers(size)
         };
-<<<<<<< ours
         self.draw_interface_overlays(&mut batch);
-        // The ToastManager draws over every screen, the title and the
-        // options included: the narrator's toast follows the player there.
-        self.draw_narrator_toast(&mut batch);
-=======
-        // Vanilla's confirmation replaces the dialog as the screen.
-        if self.command_prompt.is_none() {
-            self.draw_dialog(&mut batch);
-        }
-        self.draw_pack_prompt(&mut batch);
-        self.draw_code_of_conduct(&mut batch);
-        self.draw_link_prompt(&mut batch);
-        self.draw_command_prompt(&mut batch);
         self.draw_context_menu(&mut batch);
         if let Some((bar, fade)) = reload_overlay {
             self.draw_reload_overlay(&mut batch, bar, fade);
@@ -7981,7 +7954,6 @@ impl Game<'_> {
         // Gui.extractRenderState draws toasts over the active screen or overlay,
         // after the saving indicator and before the debug overlay.
         self.draw_every_toast(&mut batch);
->>>>>>> theirs
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
         self.draw_debug_overlay(&mut batch, size);
@@ -8162,13 +8134,10 @@ impl Game<'_> {
         );
         let dispatch_hud = !gui_canceled && !replaying;
         self.hud_layer_next = dispatch_hud.then_some(0);
-<<<<<<< ours
-        let (w, h) = (full_w, full_h);
-        let (wi, hi) = (w as i32, h as i32);
-=======
         self.hud_status_heights = Default::default();
         self.hud_status_heights_set.set(None);
->>>>>>> theirs
+        let (w, h) = (full_w, full_h);
+        let (wi, hi) = (w as i32, h as i32);
         self.ui.room = self.hud_room(w, h, show_hud);
         // Starling: the HUD keeps to the screen's safe area (`hud_safe_insets`), from the hotbar on;
         // what covers the view (the spyglass, the crosshair, the sleep overlay) takes all of it.
@@ -8236,34 +8205,6 @@ impl Game<'_> {
                     return;
                 }
                 if spectator {
-<<<<<<< ours
-                    g.draw_spectator_hotbar(batch);
-                } else {
-                    let partial = g.clock.fraction() as f32;
-                    let inputs = hud_layout::HotbarInputs {
-                        selected: g.selected as i32,
-                        right_handed: !g.settings.main_hand_left,
-                        offhand: g.offhand.is_some(),
-                        slots: std::array::from_fn(|i| {
-                            g.inventory[i]
-                                .as_ref()
-                                .map(|_| (f32::from(g.hotbar_pop[i]) - partial).max(0.0))
-                        }),
-                        offhand_pop: (f32::from(g.hotbar_pop[9]) - partial).max(0.0),
-                        attack: attack
-                            .filter(|_| indicator == 2)
-                            .map(|(strength, _)| strength),
-                    };
-                    let draws = hud_layout::hotbar_with_attack_side(
-                        wi,
-                        hi,
-                        &inputs,
-                        MOBILE_PLATFORM.then_some(g.settings.touch.attack_indicator_left),
-                    );
-                    // `extractSlot` for each item, in order, on the path `gui_paint` takes.
-                    let mut items = crate::game::gui_paint_items::HotbarItems { game: g };
-                    hud_layout::paint_items(batch, &g.gui.atlas, &draws, &mut items);
-=======
                     g.draw_spectator_hotbar(batch, g.own_player_is_spectator());
                 } else if let Some((inputs, source)) = g.camera_hotbar(camera) {
                     g.draw_item_hotbar(batch, [wi, hi], &inputs, source);
@@ -8276,16 +8217,18 @@ impl Game<'_> {
                             },
                         );
                         let mut draws = Vec::new();
-                        hud_layout::hotbar_attack_indicator(
+                        // Starling: on a phone the indicator goes to the side the player chose.
+                        hud_layout::hotbar_attack_indicator_on(
                             wi,
                             hi,
                             inputs.right_handed,
+                            inputs.offhand,
+                            MOBILE_PLATFORM.then_some(g.settings.touch.attack_indicator_left),
                             progress,
                             &mut draws,
                         );
                         hud_layout::paint(batch, &g.gui.atlas, &draws);
                     }
->>>>>>> theirs
                 }
             });
             self.gui_layer(VanillaGuiLayer::Effects, &mut batch, &mut |g, batch| {
@@ -8474,9 +8417,7 @@ impl Game<'_> {
                 VanillaGuiLayer::SleepOverlay,
                 &mut batch,
                 &mut |g, batch| {
-<<<<<<< ours
-                    let mut draws =
-                        hud_overlays::sleep_overlay(full_wi, full_hi, g.sleep_timer as i32);
+                    let mut draws = hud_overlays::sleep_overlay(full_wi, full_hi, g.sleep_timer);
                     if !draws.is_empty() && margins != [0.0; 4] {
                         draws.insert(
                             0,
@@ -8487,9 +8428,6 @@ impl Game<'_> {
                         );
                         draws.push(hud_layout::GuiDraw::Pop);
                     }
-=======
-                    let draws = hud_overlays::sleep_overlay(wi, hi, g.sleep_timer);
->>>>>>> theirs
                     hud_layout::paint(batch, &g.gui.atlas, &draws);
                 },
             );
@@ -9069,12 +9007,8 @@ impl Game<'_> {
         self.see_through_collector = st_collector;
         self.see_through_vertices = see_through;
         laps.lap("eg_name_tags");
-<<<<<<< ours
         // Entity shadows (EntityRenderer.extractShadow), unless the Entity Shadows option is off; a
-        // native pack's sun shadows replace them.
-=======
-        // Entity shadows (EntityRenderer.extractShadow); a shader pack's sun shadows replace them.
->>>>>>> theirs
+        // shader pack's sun shadows replace them.
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
         let pack_shadows = self
             .renderer
@@ -11866,30 +11800,19 @@ impl Game<'_> {
         ];
         // Camera.extractRenderState: only spectator inside a solidRender block disables smartCull.
         let cave_culling = self.settings.sunrise.cave_culling
-<<<<<<< ours
-            && !self
-                .res
-                .facts()
-                .get(self.world.block(block[0], block[1], block[2]))
-                .solid_render;
-        let (menu_blur_cache, kept_menu) = self.menu_blur_cache();
-        // The cave culling search runs on its worker while the frame is prepared.
-        if cave_culling
-            && self.title.is_none()
-            && !kept_menu
-=======
             && !(self.spectator()
                 && self
                     .res
                     .facts()
                     .get(self.world.block(block[0], block[1], block[2]))
                     .solid_render);
+        let (menu_blur_cache, kept_menu) = self.menu_blur_cache();
         // The bounded section graph runs on its worker while the frame is prepared, even when
         // smart culling is off (`SectionOcclusionGraph.runUpdates`).
         let effective_render_distance = self.effective_render_distance();
         let effective_detail_distance = (effective_render_distance * 16) as f32;
         if self.title.is_none()
->>>>>>> theirs
+            && !kept_menu
             && let Some(renderer) = self.renderer.as_mut()
         {
             renderer.sync_loaded_columns(&self.world.chunks);
@@ -12094,49 +12017,10 @@ impl Game<'_> {
         // CAN_PLACE_ON item matching the block, and spectators with a menu block; Sunrise
         // does not open menus for spectators, so those never show it. An open
         // screen does not hide it: vanilla checks the HUD and the game mode, not the screen.
-<<<<<<< ours
-        let adventure = self.mode == sunrise_client::command::args::GameMode::Adventure;
-        let can_build = self.may_build() || adventure;
-        let outline = if block_outline_drawn(
-            self.ui.hide_gui,
-            self.entity_targeted(),
-            can_build,
-            self.shows_panorama(),
-        ) && !self.touch_hides_outline()
-        {
-            self.pick()
-                .filter(|h| {
-                    self.may_build()
-                        || !self.block_action_restricted(h.pos)
-                        || self.can_place_on_in_adventure(h.pos)
-                })
-                .filter(|h| {
-                    let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
-                    let mut canceled = false;
-                    self.native_block_highlight(h.pos, state, alpha as f32, &mut canceled);
-                    !canceled
-                })
-                .map(|h| {
-                    let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
-                    outline_after_terrain = self
-                        .pack
-                        .render
-                        .model_catalog
-                        .collect(state, BlockPos::new(h.pos[0], h.pos[1], h.pos[2]))
-                        .is_ok_and(|models| {
-                            models
-                                .iter()
-                                .any(|(_, model)| model.faces.iter().any(|f| f.translucent))
-                        });
-                    self.outline_edges_iter(state, h.pos).collect()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-=======
         let outline: Vec<_> = self
             .block_outline_hit()
+            // Starling: a touch that hides it.
+            .filter(|_| !self.touch_hides_outline())
             .filter(|h| {
                 let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
                 let mut canceled = false;
@@ -12158,7 +12042,6 @@ impl Game<'_> {
                 self.outline_edges_iter(state, h.pos).collect()
             })
             .unwrap_or_default();
->>>>>>> theirs
         pr.lap("pr_outline");
         let title = self.shows_panorama();
         let (yaw, pitch, roll) = if title {
@@ -12204,12 +12087,6 @@ impl Game<'_> {
         let distance = (terrain_distance * 16) as f32;
         let depth_far =
             sunrise_client::camera::depth_far(terrain_distance, self.settings.cloud_range);
-<<<<<<< ours
-        // Only native mods read it: no matrices or allocation per frame without one.
-        // Starling: and the mods made for Sunrise's own API (`native_camera`,
-        // starling/native_compat.rs), which that list doesn't hold.
-        let mods_read_camera = true;
-=======
         let view_transform = if camera_effects
             && self.player.is_some()
             && mod_api::__private::listened(mod_api::HookId::RenderViewTransform)
@@ -12231,7 +12108,6 @@ impl Game<'_> {
         };
         // The pose the camera, GUI and hand see: the vanilla bob, then the mod's transform.
         let posed_bob = bob * view_transform;
->>>>>>> theirs
         self.screen_blur_requested.set(false);
         // GUI and world hooks read the same frame snapshot. Keep its dimension allocation
         // between frames rather than formatting another copy for the world renderer.
@@ -13395,15 +13271,11 @@ impl Game<'_> {
                 true
             }
             Screen::Creative => {
-<<<<<<< ours
-                let released = left && self.creative_screen.release();
-                let taken = self.inventory_mouse_release(!left) || released;
+                let taken =
+                    self.inventory_mouse_release(!left) || (left && self.creative_screen.release());
                 // Starling: Bedrock Inventory's window follows the pointer again.
                 self.bedrock_held = false;
                 taken
-=======
-                self.inventory_mouse_release(!left) || (left && self.creative_screen.release())
->>>>>>> theirs
             }
             Screen::Paused if left_press && self.pause_menu => self.pause_click()?,
             Screen::WorldOptions if left_press => self.world_options_click(),
@@ -13612,14 +13484,6 @@ impl Game<'_> {
                         if delta != [0.0; 2]
                             && let Some(button) = button
                         {
-<<<<<<< ours
-                            title.drag(self.cursor, (w, h));
-                            title.drag_field(&self.gui.atlas, self.cursor.0);
-                        }
-                        self.drag_title_player();
-                        if self.dragging && self.screen == Screen::Options {
-                            self.options_drag()?;
-=======
                             // A press on the item panel's list is the panel's until its
                             // release: no widget, menu or slot hears the drag.
                             let panel = self.mod_browser_drag_move();
@@ -13634,10 +13498,11 @@ impl Game<'_> {
                             let handled = handled
                                 || (self.screen_state.screen_instance == initial_instance
                                     && self.screen_drag_response(overlay, button, size, (w, h))?);
+                            // Starling: the title screen's player turns under the pointer.
+                            self.drag_title_player();
                             if let Some(post) = mouse_post.as_mut() {
                                 post.handled = handled;
                             }
->>>>>>> theirs
                         }
                     }
                 }
@@ -13742,25 +13607,9 @@ impl Game<'_> {
                     let mut screen_scrolled = false;
                     let stick_scroll = self.pad_stick_scroll();
                     let step_scroll = self.pad_step_scroll();
-<<<<<<< ours
-                    if self.title_input_active() && self.screen != Screen::Win {
+                    if self.screen == Screen::Playing && self.title.is_some() {
                         let gui = self.gui_size();
-                        let title = self.title.as_mut().expect("title input is active");
-=======
-                    if self.screen == Screen::Playing
-                        && let Some(title) = &mut self.title
-                    {
-                        let size = self
-                            .window
-                            .as_ref()
-                            .map(|w| w.inner_size())
-                            .unwrap_or_default();
-                        let batch = HudBatch::new(
-                            [size.width, size.height],
-                            self.settings.gui_scale_inputs(),
-                        );
-                        let gui = (batch.width, batch.height);
->>>>>>> theirs
+                        let title = self.title.as_mut().expect("the title is up");
                         if step_scroll {
                             title.step_scroll(d, self.cursor, gui);
                         } else if stick_scroll {
@@ -13792,19 +13641,6 @@ impl Game<'_> {
                         };
                         self.hotbar_wheel_step(wheel, vertical_steps);
                     }
-<<<<<<< ours
-                    if self.screen == Screen::Chat && d != 0.0 {
-                        self.chat_scroll(d);
-                    }
-                    if self.screen == Screen::Social && d != 0.0 {
-                        self.social_scroll(d);
-                    }
-                    if self.screen == Screen::CommandBlock && d != 0.0 {
-                        self.command_block_scroll(d);
-                    }
-                    if self.screen == Screen::Options && d != 0.0 {
-                        self.options_scroll(d, finger)?;
-=======
                     match self.screen {
                         // ChatScreen.mouseScrolled always takes the wheel.
                         Screen::Chat => {
@@ -13813,9 +13649,8 @@ impl Game<'_> {
                         }
                         Screen::Social => screen_scrolled |= self.social_scroll(d),
                         Screen::CommandBlock => screen_scrolled |= self.command_block_scroll(d),
-                        Screen::Options => screen_scrolled |= self.options_scroll(d)?,
+                        Screen::Options => screen_scrolled |= self.options_scroll(d, finger)?,
                         _ => {}
->>>>>>> theirs
                     }
                     // AbstractContainerScreen.mouseScrolled: a bundle under the
                     // cursor takes the wheel before the screen's own scrolling.
@@ -14148,12 +13983,7 @@ impl Game<'_> {
                         };
                         own_work = Some((ms(cpu), gpu));
                         if rendered {
-<<<<<<< ours
-                            let ms = |d: Duration| d.as_secs_f32() * 1000.0;
-                            lab_sample = Some((ms(elapsed), ms(cpu), r.gpu_times.last().copied()));
-                            perf_times = Some((ms(cpu), r.gpu_times.last().copied()));
-=======
->>>>>>> theirs
+                            lab_sample = Some((ms(elapsed), ms(cpu), gpu));
                             let g = &self.settings.sunrise;
                             // The scale while Dynamic Resolution moves it on its own.
                             let dynamic_scale = g
@@ -15400,11 +15230,8 @@ impl<'a> Game<'a> {
             }),
             skin_profiles: RefCell::new(sunrise_client::skins::Resolver::new()),
             skin_slots: sunrise_client::skins::SkinSlots::new(sunrise_client::hud::SKIN_SLOTS),
-<<<<<<< ours
             own_skin: Default::default(),
-=======
             player_skin_slot: None,
->>>>>>> theirs
             trim_slots: Default::default(),
             cart_models: prepared.cart_models,
             riding: None,
@@ -15798,9 +15625,10 @@ pub(crate) fn run_with(
             }
             return Err(error.into());
         }
-<<<<<<< ours
-        return Err(error.into());
-    }
+    };
+    // Starling: what Android's setup screen prepares is the full client's.
+    #[cfg(target_os = "android")]
+    let preparation = sunrise_core::prepared_profile::Profile::Full;
     // Bedrock's touch buttons, fetched from Mojang once (bedrock_touch.rs) where the resources
     // came without them (prepared on a computer, or no network then): drawn from the next start,
     // or this one's if they come before its GUI atlas.
@@ -15853,10 +15681,6 @@ pub(crate) fn run_with(
             }
         }
     }
-=======
-    };
-    let mut early_settings = Settings::load(&Game::options_path());
->>>>>>> theirs
     options
         .mods
         .capture_code_switches(&early_settings.mods.disabled);

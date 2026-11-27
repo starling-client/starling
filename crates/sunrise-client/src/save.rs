@@ -27,9 +27,9 @@ pub(crate) use horizon_names::adopt_in_player as adopt_horizon_player;
 mod horizon_names_tests;
 pub mod level_mods;
 mod respawn;
-mod writes;
 #[path = "save/starling.rs"]
 mod starling;
+mod writes;
 #[allow(unused_imports)]
 pub use self::starling::*;
 // Starling: the background writer of small save files (`later::deferred`, the autosave).

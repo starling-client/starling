@@ -15,7 +15,6 @@ pub fn is_remote(path: &Path) -> bool {
             .is_some_and(|v| v["remote"] == true)
 }
 
-
 /// Standard base64 (RFC 4648): screenshots in replies and MCP image content.
 pub fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -34,7 +33,6 @@ pub fn base64(bytes: &[u8]) -> String {
     }
     out
 }
-
 
 /// Decodes [`base64`]'s output; None on anything else.
 pub fn unbase64(text: &str) -> Option<Vec<u8>> {
@@ -57,7 +55,6 @@ pub fn unbase64(text: &str) -> Option<Vec<u8>> {
     }
     Some(out)
 }
-
 
 impl FrameStats {
     /// Every recorded frame time, in milliseconds, in order (Starling's diagnostics read them).

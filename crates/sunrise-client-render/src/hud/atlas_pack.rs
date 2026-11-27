@@ -501,20 +501,18 @@ impl HudAtlas {
             max_atlas_size,
             &mut full_sizes,
         )
-                .or_else(|error| -> Result<_> {
-                let models = reducible_model_sprites(root, &base_images, &blur_bordered);
-                let layout = Self::layout_reducing_models_with_borders(
-                    &mut base_images,
-                    &mut gui_sizes,
-                    &models,
-                    &clamp_bordered,
-                    max_atlas_size,
-                )?;
-                log::warn!(
-                    "reduced HUD model texture resolution to keep the resource pack: {error}"
-                );
-                Ok(layout)
-            })?;
+        .or_else(|error| -> Result<_> {
+            let models = reducible_model_sprites(root, &base_images, &blur_bordered);
+            let layout = Self::layout_reducing_models_with_borders(
+                &mut base_images,
+                &mut gui_sizes,
+                &models,
+                &clamp_bordered,
+                max_atlas_size,
+            )?;
+            log::warn!("reduced HUD model texture resolution to keep the resource pack: {error}");
+            Ok(layout)
+        })?;
         // A multiple of 1024 rather than a power of two: the default resources
         // need 4096x5120 (8192 rows before), Faithful 32x 4096x12288 (16384).
         let height = glyph_region.saturating_add(GLYPH_ROWS).saturating_add(1023) / 1024 * 1024;

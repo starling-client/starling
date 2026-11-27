@@ -17,8 +17,7 @@ fn base64_round_trips_and_remote_endpoints_are_marked() {
         assert_eq!(unbase64(&base64(bytes)).as_deref(), Some(bytes));
     }
     assert_eq!(unbase64("Zm9v!"), None);
-    let path =
-        std::env::temp_dir().join(format!("sunrise-ctl-remote-{}.json", std::process::id()));
+    let path = std::env::temp_dir().join(format!("sunrise-ctl-remote-{}.json", std::process::id()));
     std::fs::write(&path, r#"{"port":47800,"token":"t","remote":true}"#).unwrap();
     assert!(is_remote(&path));
     std::fs::write(&path, r#"{"port":47800,"token":"t"}"#).unwrap();

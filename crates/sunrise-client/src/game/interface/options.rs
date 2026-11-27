@@ -472,7 +472,7 @@ impl Game<'_> {
             self.ui
                 .options
                 .scroll_at(&self.settings, size, self.cursor, amount);
-            return Ok(());
+            return Ok(true);
         }
         let (handled, events) =
             self.ui

@@ -949,7 +949,17 @@ impl Game<'_> {
             let invisible = self.own_invisible();
             // CapeLayer and Deadmau5EarsLayer: `!state.isInvisible`, whoever sees the body.
             if !invisible && !hidden.contains(mod_api::StockLayer::Cape) {
-                self.player_cape_geometry(m, chest, camera, alpha as f32, (self as &dyn sunrise_client::mobs::render::RenderDataSource, packed), out);
+                self.player_cape_geometry(
+                    m,
+                    chest,
+                    camera,
+                    alpha as f32,
+                    (
+                        self as &dyn sunrise_client::mobs::render::RenderDataSource,
+                        packed,
+                    ),
+                    out,
+                );
             }
             if !invisible && !hidden.contains(mod_api::StockLayer::Deadmau5Ears) {
                 self.player_ears_geometry(m, &name, camera, alpha as f32, packed, out);
@@ -1192,16 +1202,17 @@ impl Game<'_> {
         };
         if in_world
             && let Some(redrawn_wings) = self.mod_layer_geometry(
-            &m,
-            Some(who),
-            frame_draw.model(),
-            layers,
-            &stock_ctx,
-            1.0,
-            camera,
-            light,
-            &mut verts,
-        ) {
+                &m,
+                Some(who),
+                frame_draw.model(),
+                layers,
+                &stock_ctx,
+                1.0,
+                camera,
+                light,
+                &mut verts,
+            )
+        {
             wings = redrawn_wings;
         }
         let height = if m.extra.crouching { 1.5 } else { 1.8 };

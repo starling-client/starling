@@ -91,11 +91,11 @@ impl Game<'_> {
             // may be unsigned; Ely.by's never are.
             let mut downloads = self.skin_downloads.borrow_mut();
             let mut resolve = |uuid, textures: &skins::Textures| {
-                if let skins::SkinLookup::Ready(skin) =
-                    skins::lookup(textures, uuid != local && !elyby.iter().any(|(u, _)| *u == uuid), |kind, url| {
-                        downloads.state(kind, url)
-                    })
-                    && skin != skins::ResolvedSkin::default()
+                if let skins::SkinLookup::Ready(skin) = skins::lookup(
+                    textures,
+                    uuid != local && !elyby.iter().any(|(u, _)| *u == uuid),
+                    |kind, url| downloads.state(kind, url),
+                ) && skin != skins::ResolvedSkin::default()
                 {
                     skins.insert(uuid, skin);
                 }

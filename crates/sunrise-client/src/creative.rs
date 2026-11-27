@@ -245,7 +245,8 @@ impl DisplayWindow {
     /// The stack display slot `slot` shows, None for an empty cell (a saved toolbar's empty
     /// slot), one past the list's end, or a slot that is not a display slot.
     pub fn stack(&self, slot: usize) -> Option<&ItemStack> {
-        let cell = Creative::display_cell(slot).filter(|&cell| cell < self.rows * Creative::DISPLAY_COLUMNS)?;
+        let cell = Creative::display_cell(slot)
+            .filter(|&cell| cell < self.rows * Creative::DISPLAY_COLUMNS)?;
         self.items.get(self.first + cell).filter(|s| s.count > 0)
     }
 
@@ -425,7 +426,8 @@ impl Creative {
     }
     /// `display_slots` for a grid of `rows` (Starling's Bedrock Inventory has six).
     pub fn display_slots_for(rows: usize) -> impl Iterator<Item = (usize, (f32, f32))> {
-        (0..rows * Self::DISPLAY_COLUMNS).map(|cell| (Self::DISPLAY + cell, Self::display_position(cell)))
+        (0..rows * Self::DISPLAY_COLUMNS)
+            .map(|cell| (Self::DISPLAY + cell, Self::display_position(cell)))
     }
 
     fn display_position(cell: usize) -> (f32, f32) {

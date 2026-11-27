@@ -117,7 +117,9 @@ large_enum_variant = "allow"
 # Android backend makes touches of a controller's sticks and a mouse's buttons and drops the
 # rest (hover, the wheel, the buttons' own events), and the app never sees the raw events.
 # Starling takes those there (crates/sunrise-client/src/android_lib.rs). A few lines in the
-# backend, marked "Sunrise's patch"; nothing changes on the other platforms.
+# backend, marked "Sunrise's patch"; nothing changes on the other platforms. Sunrise's own patch is
+# in the same folder: X11 raw motion from the slave pointers, once each under its pointer grab
+# (#3022; THIRD_PARTY_NOTICES.md).
 [patch.crates-io]
 wgpu-hal = { path = "third_party/wgpu-hal" }
 winit = { path = "third_party/winit" }
@@ -132,8 +134,6 @@ naga = { path = "third_party/naga" }
 # game died before main on CPUs without it (Core 2, #7264; THIRD_PARTY_NOTICES.md). Drop this and
 # the folder once a libmimalloc-sys release has microsoft/mimalloc#1291's fix.
 libmimalloc-sys = { path = "third_party/libmimalloc-sys" }
-# winit 0.30.13 whose X11 raw motion comes from the slave pointers, once each under its pointer grab (#3022; THIRD_PARTY_NOTICES.md).
-winit = { path = "third_party/winit" }
 
 # Line tables keep file:line in backtraces; full debug info made every
 # example and test binary hundreds of megabytes and slow to link.

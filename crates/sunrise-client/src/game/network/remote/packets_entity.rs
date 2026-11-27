@@ -64,6 +64,8 @@ impl Game<'_> {
             }
             self.apply_set_entity_data_entry(p.id, entry);
         }
+        // Starling: any entity's custom name (armor stand holograms, objects).
+        self.remote_names(p.id, &p.values);
         Ok(())
     }
 
@@ -72,8 +74,6 @@ impl Game<'_> {
         let (index, _, value) = entry;
         let single = std::slice::from_ref(entry);
         let size_key = self.synched_size_key(id as u32);
-        // Starling: any entity's custom name (armor stand holograms, objects).
-        self.remote_names(p.id, &p.values);
         if let Some(r) = self.remote.as_mut() {
             if let (0, Value::Byte(flags)) = (index, value) {
                 if let Some(t) = r.entities.get_mut(&id) {

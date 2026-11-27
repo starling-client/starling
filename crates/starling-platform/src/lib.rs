@@ -25,10 +25,16 @@ mod tests {
     #[test]
     fn every_language_is_registered_and_english_is_the_reference() {
         assert!(LANG.len() > 50, "only {} lang files", LANG.len());
-        let english = LANG.iter().find(|(code, _)| *code == "en_us").expect("en_us.json");
+        let english = LANG
+            .iter()
+            .find(|(code, _)| *code == "en_us")
+            .expect("en_us.json");
         assert!(english.1.contains("\"starling.credits.sunrise\""));
         for (code, json) in LANG {
-            assert!(json.trim_start().starts_with('{'), "{code}.json is no JSON object");
+            assert!(
+                json.trim_start().starts_with('{'),
+                "{code}.json is no JSON object"
+            );
         }
     }
 }

@@ -308,8 +308,11 @@ impl Arena {
     ) -> Self {
         let page_limit = Self::page_limit(&device.limits(), stride, usage, page_bytes);
         let ceiling = page_ceiling(page_bytes);
-        let growth_limit = (ceiling < page_bytes)
-            .then(|| ((ceiling / stride) / GRAIN * GRAIN).min(page_limit).max(GRAIN));
+        let growth_limit = (ceiling < page_bytes).then(|| {
+            ((ceiling / stride) / GRAIN * GRAIN)
+                .min(page_limit)
+                .max(GRAIN)
+        });
         let capacity = capacity
             .next_multiple_of(GRAIN)
             .min(growth_limit.unwrap_or(page_limit).min(page_limit));

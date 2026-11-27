@@ -36,7 +36,6 @@ pub(super) fn the_account_screen_offers_signing_in_and_goes_back() {
     assert!(matches!(f.title.mode, Mode::Main));
 }
 
-
 #[test]
 pub(super) fn world_options_survive_the_restart_as_json() {
     let mut options = WorldOptions {
@@ -57,9 +56,9 @@ pub(super) fn world_options_survive_the_restart_as_json() {
     assert_eq!(old.mods, None);
 }
 
-
 #[test]
-pub(super) fn account_secret_fields_accept_credentials_without_chat_filtering_or_debug_disclosure() {
+pub(super) fn account_secret_fields_accept_credentials_without_chat_filtering_or_debug_disclosure()
+{
     use winit::keyboard::KeyCode;
     let mut f = Fixture::new();
     f.title.mode = Mode::Account(account::Screen::default());

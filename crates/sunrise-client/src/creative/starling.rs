@@ -9,7 +9,6 @@ impl Creative {
     /// How far past an item tab's grid of items a stack put down still goes back to the tab.
     pub const GRID_MARGIN: f32 = 4.0;
 
-
     /// Whether `mouse`, relative to the screen origin, is on an item tab's grid of `rows` rows of
     /// items or within [`Creative::GRID_MARGIN`] of it. The display slots' hover boxes leave no
     /// gap between them (`isHovering` grows each by a pixel); the margin is Starling's.
@@ -19,7 +18,6 @@ impl Creative {
         let (right, bottom) = (8.0 + 9.0 * 18.0 + m, 17.0 + rows as f32 * 18.0 + m);
         mouse.0 >= left && mouse.0 < right && mouse.1 >= top && mouse.1 < bottom
     }
-
 
     /// Whether `mouse`, relative to the screen origin, is within `reach` of the middle of the
     /// Survival Inventory tab's Destroy Item slot, as a finger means a slot a little past it.
@@ -40,7 +38,6 @@ impl Creative {
         }
     }
 
-
     /// Starling: the tab the screen works with, without `select`'s search box and scroll: Bedrock
     /// Inventory shows two tabs' windows and goes from one to the other inside a frame.
     pub fn show(&mut self, tab: usize) {
@@ -55,5 +52,4 @@ impl Creative {
     pub fn six_row_slots() -> impl Iterator<Item = usize> {
         Self::DISPLAY..Self::DISPLAY + 54
     }
-
 }

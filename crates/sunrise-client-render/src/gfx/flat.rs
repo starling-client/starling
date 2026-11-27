@@ -285,8 +285,7 @@ pub(crate) fn is_broken_intel_vulkan(info: &wgpu::AdapterInfo) -> bool {
 
 fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
     let flags = adapter.get_downlevel_capabilities().flags;
-    pages_readable(adapter, device)
-        && flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+    pages_readable(adapter, device) && flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
 }
 
 /// Whether vertex shaders can read the section arena's pages as storage: a shader pack's

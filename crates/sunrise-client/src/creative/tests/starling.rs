@@ -14,7 +14,6 @@ fn six_rows_of_items_have_no_gap() {
     }
 }
 
-
 #[test]
 fn the_item_grid_takes_its_cells_the_pixels_between_them_and_a_margin() {
     // A cell's middle, the pixels between two items, and the grid's corners past the cells.
@@ -29,7 +28,6 @@ fn the_item_grid_takes_its_cells_the_pixels_between_them_and_a_margin() {
     assert!(Creative::on_item_grid((17.0, 116.0), 6));
     assert!(!Creative::on_item_grid((17.0, 129.0), 6));
 }
-
 
 #[test]
 fn a_finger_means_the_destroy_item_slot_a_little_past_it() {

@@ -187,7 +187,7 @@ pub(super) fn prepare(pp: &Preprocessed) -> Option<Preprocessed> {
     let named = anonymous_structs::name(pp.code());
     let code = named.as_deref().unwrap_or(pp.code());
     let named = shadowed_types::rename(code).or(named);
-    let code = named.as_deref().unwrap_or(&pp.code);
+    let code = named.as_deref().unwrap_or(pp.code());
     let flat = interface_blocks::flatten(code)
         .or(named)
         .map(|code| pp.with_code(code));

@@ -4387,11 +4387,7 @@ impl OptionsUi {
                 return (events, true);
             }
         }
-        if !right
-            && self.page() == Page::Skin
-            && self.skin_page
-            && self.profile_name.is_none()
-        {
+        if !right && self.page() == Page::Skin && self.skin_page && self.profile_name.is_none() {
             let field = &mut self.skin.name;
             if ui::hovered((x, y), field.x, field.y, field.width, field.height)
                 && y >= top
@@ -4545,14 +4541,14 @@ impl OptionsUi {
                             } else {
                                 s.keys.reset_all();
                                 s.mods.keys.clear();
+                                for (name, _) in crate::extras::KEYS {
+                                    s.extras.reset_key(name);
+                                }
                             }
                             events.push(Event::Changed);
                         }
                         Act::ToggleMod(i) => {
                             s.mods.toggle(*i);
-                            for (name, _) in crate::extras::KEYS {
-                                s.extras.reset_key(name);
-                            }
                             events.push(Event::Changed);
                             events.push(Event::ModToggled(*i));
                         }
@@ -5442,9 +5438,6 @@ impl OptionsUi {
         text: Option<&str>,
         shift: bool,
     ) -> Vec<Event> {
-        if self.wardrobe_saving() {
-            return Vec::new();
-        }
         self.key_input(s, atlas, key, text, shift).1
     }
 
@@ -5457,6 +5450,10 @@ impl OptionsUi {
         text: Option<&str>,
         shift: bool,
     ) -> (bool, Vec<Event>) {
+        // Starling: the keys wait while the wardrobe saves the skin.
+        if self.wardrobe_saving() {
+            return (true, Vec::new());
+        }
         self.capture_video_atlas(s);
         let (handled, events) = self.key_modifiers_unrevised(s, atlas, key, text, shift);
         if !events.is_empty() {
@@ -5908,8 +5905,9 @@ impl OptionsUi {
                             } else {
                                 s.keys.reset_all();
                                 s.mods.keys.clear();
-                            for (name, _) in crate::extras::KEYS {
-                                s.extras.reset_key(name);
+                                for (name, _) in crate::extras::KEYS {
+                                    s.extras.reset_key(name);
+                                }
                             }
                             events.push(Event::Changed);
                         }

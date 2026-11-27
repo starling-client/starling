@@ -1635,7 +1635,9 @@ impl Loader<'_> {
                 return None;
             }
         };
-        self.post.notes.extend(program.notes.iter().map(ToString::to_string));
+        self.post
+            .notes
+            .extend(program.notes.iter().map(ToString::to_string));
         self.post.config.read_vertex(&vertex);
         self.post.config.read(&fragment);
         let mut buffers =
@@ -1787,7 +1789,9 @@ impl Loader<'_> {
                 return None;
             }
         };
-        self.post.notes.extend(program.notes.iter().map(ToString::to_string));
+        self.post
+            .notes
+            .extend(program.notes.iter().map(ToString::to_string));
         self.post.config.read_vertex(vertex);
         self.post.config.read(fragment);
         let mut buffers =
@@ -1856,7 +1860,9 @@ impl Loader<'_> {
             self.post.notes.extend(warnings(&pp));
             match contained(&path, || translate_compute(&pp)) {
                 Ok(program) => {
-                    self.post.notes.extend(program.notes.iter().map(ToString::to_string));
+                    self.post
+                        .notes
+                        .extend(program.notes.iter().map(ToString::to_string));
                     out.push((name, program));
                 }
                 Err(errors) => skip(self.post, &name, located_errors(&errors)),
