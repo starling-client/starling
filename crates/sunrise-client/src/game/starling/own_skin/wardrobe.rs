@@ -482,16 +482,14 @@ impl Game<'_> {
     }
 
     fn cape_texture(&mut self, url: String) -> Option<String> {
-        use sunrise_client::skins::{Download, Kind, Textures};
+        use sunrise_client::skins::{Download, Kind, cape_location, texture_hash};
         let downloaded = self.skin_downloads.borrow_mut().state(Kind::Cape, &url);
         if downloaded != Download::Ready {
             return None;
         }
         self.store_ready_skins();
-        let location = sunrise_client::skins::cape(&Textures {
-            cape: Some(url),
-            ..Default::default()
-        })?;
+        // `PlayerSkin.cape`'s location, as Sunrise's lookup names a ready cape.
+        let location = cape_location(&texture_hash(&url)?);
         self.again_skin(&location).then_some(location)
     }
 
