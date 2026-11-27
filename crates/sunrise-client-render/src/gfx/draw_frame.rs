@@ -2921,14 +2921,6 @@ impl Renderer {
                 resumed.set_bind_group(0, &self.group, &[]);
                 pass = pack_timing::CountedPass::plain(resumed);
             }
-            // A mod frame-graph slot ends the world pass; drawing resumes into the world's
-            // colour and depth.
-            let plain_pass = |encoder: &mut wgpu::CommandEncoder| {
-                let mut pass = after_culling_pass(encoder, world_view, world_depth, true, None)
-                    .forget_lifetime();
-                pass.set_bind_group(0, &self.group, &[]);
-                pack_timing::CountedPass::plain(pass)
-            };
             // Keep the cursor for engine-supplied test batches. Mod stage callbacks draw only
             // explicitly selected prepared ranges at their real boundaries.
             let mut primitive_stage = 0;
@@ -2941,7 +2933,9 @@ impl Renderer {
                     pack_frame(&mut pass);
                     pack_timing::CountedPass::plain(pass)
                 };
-            // The occlusion test's pipeline draws into the world's colour alone.
+            // The occlusion test's pipeline draws into the world's colour alone, and a mod
+            // frame-graph slot ends the world pass: drawing resumes into the world's colour and
+            // depth, with a native pack's groups set again.
             let plain_pass = |encoder: &mut wgpu::CommandEncoder| {
                 let mut pass = after_culling_pass(encoder, world_view, world_depth, true, None)
                     .forget_lifetime();
