@@ -1076,6 +1076,7 @@ mod tests {
 
     #[test]
     fn every_text_is_in_the_language_table() {
+        crate::starling_text::install();
         let (_, missed) = lang::scoped(lang::Language::load(&[], "de_de"), || {
             for (page, groups) in rows() {
                 lang::get(page.name());

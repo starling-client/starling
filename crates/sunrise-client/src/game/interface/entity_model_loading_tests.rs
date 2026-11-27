@@ -254,7 +254,7 @@ fn armor_equipment_loads_without_an_entity_model_document() {
             ("entity/equipment/humanoid/dyed_only".into(), true, None),
         ]
     );
-    assert!(!assets.equipment_layers.contains_key("minecraft:invalid"));
+    assert!(!assets.equipment.contains_key("minecraft:invalid"));
 }
 
 #[test]

@@ -140,6 +140,8 @@ impl RtWorld {
         }
     }
 
+    // Android's alone; the desktop build doesn't reach it.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     /// Drops everything (a dimension or layout change re-meshes the world). The TLAS
     /// object itself stays: bind groups hold it, and the next sync rebuilds it empty.
     pub fn clear(&mut self) {

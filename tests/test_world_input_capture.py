@@ -197,6 +197,8 @@ impl Game {
     fn restore_held_keys(&mut self) {} // This fixture exercises pointer state, not key mappings.
     fn dialog_open(&self) -> bool { false }
     fn scripted_run(&self) -> bool { self.scripted }
+    // Starling: the interface's origin (a phone's safe area); none on a desktop window.
+    fn interface_origin(&self) -> [f32; 2] { [0.0, 0.0] }
     fn handle_window_event(&mut self, _: &dyn EventLoopCtl, _: WindowId, event: WindowEvent,
                            _: input_trace::InputOrigin) {
         // The `Focused` arm of the game's handler, as far as the pointer goes.
@@ -524,6 +526,7 @@ fn main() {
                                   method(source, "pointer_space") + "\n" +
                                   method(source, "pointer_projection") + "\n" +
                                   method(source, "set_window_cursor") + "\n" +
+                                  method(source, "in_interface") + "\n" +
                                   method(source, "capture_loaded_world") + "\n" +
                                   method(source, "regrab_on_refocus") + "\n" +
                                   method(source, "internal_grab") + "\n" +

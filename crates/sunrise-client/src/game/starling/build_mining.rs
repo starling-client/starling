@@ -1,3 +1,5 @@
+// The build screen's mining scene runs on the phone alone (native_builds.rs).
+#![cfg_attr(not(target_os = "android"), allow(dead_code))]
 // game-module-cfg: target_os = "android"
 //! Mining, the other way to pass the time while the build service compiles (native_builds.rs), seen
 //! from above: rock over the screen with a way in at the middle. A tap on a block beside the way in

@@ -4,6 +4,8 @@
 //! Legacy GLES lowering. Vulkan retains the original WGSL byte for byte.
 use std::borrow::Cow;
 
+// Android's alone; the desktop build doesn't reach it.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(super) fn terrain_shader(gl: bool) -> Cow<'static, str> {
     let source = include_str!("../terrain.wgsl");
     if gl {

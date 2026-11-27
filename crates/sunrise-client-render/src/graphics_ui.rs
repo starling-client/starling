@@ -3028,6 +3028,7 @@ mod tests {
     /// through its values (#1927).
     #[test]
     fn every_graphics_text_is_in_the_language_table() {
+        crate::starling_text::install();
         let (_, missed) = lang::scoped(lang::Language::load(&[], "de_de"), || {
             for hdr in HdrMode::ALL {
                 let mut s = Settings::default();

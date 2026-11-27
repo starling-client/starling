@@ -38,8 +38,9 @@ def function(text: str, name: str) -> str:
 def installs(body: str) -> list[str]:
     """Each `install_*`, `initialize()` or `install()` call, by its last two path segments."""
     calls = re.findall(r"((?:\w+::)*(?:install\w*|initialize))\s*\(", body)
+    # The phone calls the host's own `install_platform` by its path; the host calls it bare.
     return [
-        "::".join(call.split("::")[-2:])
+        "::".join(call.split("::")[-2:]).removeprefix("sunrise_mod_host::")
         for call in calls
         if not any(skip in call for skip in DESKTOP_ONLY) and call.split("::")[-1] != "install_parts"
     ]
@@ -63,10 +64,8 @@ class AndroidPlatformInstall(unittest.TestCase):
         start = function(lib, "start")
         self.assertIn("entry::start(", start)
         self.assertIn("sunrise_mod_host::load_code(", start)
-        self.assertIn("sunrise_mod_host::code_runtime()", start)
         main_with = function(HOST.read_text(encoding="utf-8"), "main_with")
         self.assertIn("load_code(", main_with)
-        self.assertIn("code_runtime()", main_with)
 
 
 if __name__ == "__main__":

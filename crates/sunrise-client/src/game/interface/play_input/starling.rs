@@ -6,6 +6,8 @@
 use super::*;
 
 impl Game<'_> {
+    // Android's alone; the desktop build doesn't reach it.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     /// Starling: a key from the touch controls, the on-screen keyboard or a custom binding. These
     /// come with no window event, which queues a tick mapping's click by its slot
     /// (`mapped_key_event`), so the click of the key's mapping (drop, swap hands, inventory, the

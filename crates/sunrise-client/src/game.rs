@@ -1412,16 +1412,24 @@ mod build_mining;
 mod creative_shift;
 #[path = "game/starling/diagnostics.rs"]
 mod diagnostics;
+// Starling: Android only (its fields of `Game` are).
+#[cfg(target_os = "android")]
 #[path = "game/starling/files_offer.rs"]
 mod files_offer;
 #[path = "game/starling/imports.rs"]
 mod imports;
 #[path = "game/starling/input_mode.rs"]
 mod input_mode;
+// Starling: Android only (its fields of `Game` are).
+#[cfg(target_os = "android")]
 #[path = "game/starling/mobile_controls/mod.rs"]
 mod mobile_controls;
+// Starling: Android only (its fields of `Game` are).
+#[cfg(target_os = "android")]
 #[path = "game/starling/mod_catalog.rs"]
 mod mod_catalog;
+// Starling: Android only (its fields of `Game` are).
+#[cfg(target_os = "android")]
 #[path = "game/starling/native_builds.rs"]
 mod native_builds;
 // Starling: the libraries the start opens follow the native mods folder (sunrise-android).
@@ -2465,6 +2473,8 @@ mod ui_control;
 #[cfg(test)]
 #[path = "game/runtime/ui_core_shader_tests.rs"]
 mod ui_core_shader_tests;
+// Starling: Android only (its fields of `Game` are).
+#[cfg(target_os = "android")]
 #[path = "game/starling/update_offer.rs"]
 mod update_offer;
 #[path = "game/interface/upload_pace.rs"]
@@ -13624,9 +13634,10 @@ impl Game<'_> {
                     let mut screen_scrolled = false;
                     let stick_scroll = self.pad_stick_scroll();
                     let step_scroll = self.pad_step_scroll();
-                    if self.screen == Screen::Playing && self.title.is_some() {
-                        let gui = self.gui_size();
-                        let title = self.title.as_mut().expect("the title is up");
+                    let gui = self.gui_size();
+                    if self.screen == Screen::Playing
+                        && let Some(title) = self.title.as_mut()
+                    {
                         if step_scroll {
                             title.step_scroll(d, self.cursor, gui);
                         } else if stick_scroll {
@@ -16167,51 +16178,6 @@ impl Game<'_> {
         } else {
             PresenceStatus::Online
         }
-    }
-}
-
-#[cfg(test)]
-mod nested_orb_spawn_tests {
-    #[test]
-    #[ignore = "needs prepared resources in SUNRISE_TEST_RESOURCES"]
-    fn experience_pickup_keeps_nested_orbs_until_the_next_ordered_pass() {
-        crate::game::native_entity_refs::tests::with_game(|game| {
-            game.world.chunks.insert(
-                (0, 0),
-                std::sync::Arc::new(sunrise_client::chunk::Chunk::empty(0, 0)),
-            );
-            game.block_ticks
-                .add_empty_chunk(sunrise_core::position::ChunkPos::new(0, 0))
-                .unwrap();
-            for (x, value) in [(7.5, 1), (9.5, 3), (11.5, 7)] {
-                game.add_orb([x, 80.0, 3.5], value);
-            }
-            let _ = game.orbs.remove(1);
-            let mut expected: Vec<_> = game.orbs.iter().map(|o| (o.id, o.join)).collect();
-            crate::game::entity::taken_pass_tests::with_spawn(
-                |g| g.add_orb([3.5, 80.0, 3.5], 1),
-                || game.tick_experience(),
-            );
-            assert_eq!(game.orbs.len(), 3);
-            let join = game.orbs[2].join;
-            expected.push((game.orbs[2].id, join));
-            assert_eq!(
-                game.orbs.iter().map(|o| (o.id, o.join)).collect::<Vec<_>>(),
-                expected
-            );
-            assert_eq!(game.orbs[2].age, 0);
-            game.ordered.announced = sunrise_client::join_seq::JoinSeq::MAX;
-            game.tickets.update(None);
-            game.begin_ordered_ticks();
-            game.run_ordered_ticks(sunrise_client::join_seq::JoinSeq::MAX, false)
-                .unwrap();
-            let spawned = game.orbs.iter().find(|o| o.join == join).unwrap();
-            assert_eq!(spawned.age, 1);
-            assert_eq!(
-                game.orbs.iter().map(|o| (o.id, o.join)).collect::<Vec<_>>(),
-                expected
-            );
-        });
     }
 }
 

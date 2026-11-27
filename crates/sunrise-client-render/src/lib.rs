@@ -75,6 +75,8 @@ pub mod jigsaw_block;
 pub mod keypad;
 pub mod mod_hooks;
 pub mod moving_colliders;
+#[cfg(test)]
+mod starling_text;
 pub mod terrain_model;
 pub use sunrise_polytone::creative_tabs as polytone_creative_tabs;
 pub use sunrise_world::json_folder;

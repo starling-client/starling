@@ -57,7 +57,7 @@ class Targets(unittest.TestCase):
         self.assertTrue((ROOT / "crates/starling-catalog/src/launcher/browser.rs").is_file())
 
     def test_remote_send_state_does_not_log(self):
-        text = body("crates/sunrise-client/src/game/network/remote/mod.rs", "fn remote_send_state(")
+        text = body("crates/sunrise-client/src/game/network/remote/sync.rs", "fn remote_send_state(")
         self.assertNotIn("log::", text)
 
 

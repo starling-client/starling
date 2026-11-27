@@ -354,6 +354,8 @@ mod tests {
     }
 
     fn english<R>(f: impl FnOnce() -> R) -> R {
+        // The labels are Starling's text (crates/starling-platform).
+        crate::starling_text::install();
         let (result, missed) = lang::scoped(lang::Language::load(&[], "en_us"), f);
         assert!(missed.is_empty(), "no English text for {missed:?}");
         result

@@ -123,6 +123,8 @@ path = "examples/standard_pack_gpu_entities.rs"
 
 [dev-dependencies]
 tempfile = "3"
+# Tests: Starling's text, installed as the game's entry installs it (src/starling_text.rs).
+starling-platform = { path = "../starling-platform" }
 mod_platform = { package = "sunrise-mod-api", path = "../sunrise-mod-api", features = ["testing"] }
 sunrise-perf = { path = "../sunrise-perf" }
 # Tests: a TrueType font to load, and the design system the menus' motion curves match.

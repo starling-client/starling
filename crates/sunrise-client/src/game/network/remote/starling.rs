@@ -16,7 +16,7 @@ const TRAIL: usize = 12;
 const STEER_REST: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
-pub(super) struct State {
+pub(in crate::game) struct State {
     /// When the last tick ended to the server, and the last movement packet went: an old
     /// server behind ViaVersion (its anticheat) wants one every tick, so gaps are logged.
     tick_end_at: Option<Instant>,
@@ -158,7 +158,7 @@ impl State {
         state: &str,
     ) {
         self.setbacks += 1;
-        if self.setbacks > 5 && self.setbacks % 50 != 0 {
+        if self.setbacks > 5 && !self.setbacks.is_multiple_of(50) {
             return;
         }
         let [sx, sy, sz] = last_sent;
@@ -172,7 +172,7 @@ impl State {
             self.moved_at
                 .map_or(-1, |at| at.elapsed().as_millis() as i64)
         );
-        if self.setbacks == 1 || self.setbacks % 50 == 0 {
+        if self.setbacks == 1 || self.setbacks.is_multiple_of(50) {
             let now = Instant::now();
             let trail: Vec<String> = self
                 .trail

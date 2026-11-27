@@ -41,8 +41,10 @@ mod present_mode_tests {
     fn present_mode_and_vsync_follow_each_other() {
         use crate::graphics::PresentMode as P;
         let none = EffectiveOutput::NONE;
-        let mut s = Settings::default();
-        s.vsync = true;
+        let mut s = Settings {
+            vsync: true,
+            ..Settings::default()
+        };
         s.sunrise.present_mode = P::Fifo;
         Item::Sunrise(H::PresentMode).cycle(&mut s, false, [854, 480], &none);
         assert_eq!((s.sunrise.present_mode, s.vsync), (P::Mailbox, false));

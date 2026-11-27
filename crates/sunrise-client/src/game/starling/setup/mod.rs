@@ -1103,12 +1103,16 @@ impl Loading {
                 let known = match accounts::state() {
                     State::OfflineProfile(name) => name,
                     State::SignedIn(account) => account.name,
+                    // The launcher's name: on Android, where the launcher is.
+                    #[cfg(target_os = "android")]
                     _ => {
                         crate::ha_launcher::catalog::Config::load(
                             &crate::ha_launcher::backend::data_dir(),
                         )
                         .name
                     }
+                    #[cfg(not(target_os = "android"))]
+                    _ => String::new(),
                 };
                 self.setup.form = Some(Form::new(Kind::Offline).with_first(known.trim()));
                 self.setup.provider = Some(Kind::Offline);

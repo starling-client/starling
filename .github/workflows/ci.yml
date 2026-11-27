@@ -66,7 +66,8 @@ jobs:
             python tools/check_public_tree.py --range HEAD
           fi
       - name: Test offline research tooling
-        run: python -m unittest discover -s tests -v
+        # Sunrise's suite less the tests of Sunrise's own release pipeline, which Starling doesn't run.
+        run: python tools/starling/py_tests.py -v
       - name: Install Rust toolchain and the ALSA and udev headers the client links against
         if: steps.rust.outputs.required != 'false'
         env:

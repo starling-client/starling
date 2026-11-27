@@ -3593,6 +3593,7 @@ mod tests {
             resolved: Default::default(),
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
+            armor_atlases: Default::default(),
         };
         (mob, data)
     }
@@ -3931,6 +3932,7 @@ mod tests {
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),
+            armor_atlases: Default::default(),
         };
         let atlas = |name: &str| {
             Some(if name.contains("_inner") {
@@ -4027,6 +4029,7 @@ mod tests {
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),
+            armor_atlases: Default::default(),
         };
         let atlas = |name: &str| {
             Some(if name.contains("copper_golem_eyes") {
@@ -4087,6 +4090,7 @@ mod tests {
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),
+            armor_atlases: Default::default(),
         };
         for left in [false, true] {
             let t = held_item_transform(&mob, 0.5, glam::DVec3::ZERO, &data, left).unwrap();
@@ -4209,6 +4213,7 @@ mod tests {
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),
+            armor_atlases: Default::default(),
         };
         let atlas = |_: &str| Some([0.0, 0.0, 0.25, 0.25]);
         let part = &kind.model;
@@ -4524,6 +4529,7 @@ mod scroll_tests {
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),
+            armor_atlases: Default::default(),
         };
         let atlas = |name: &str| {
             let h = name.len() as f32 / 64.0;
@@ -4694,6 +4700,7 @@ mod emissive_tests {
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),
+            armor_atlases: Default::default(),
         }
     }
 
@@ -4991,6 +4998,7 @@ mod random_texture_tests {
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),
+            armor_atlases: Default::default(),
         }
     }
 
@@ -5227,6 +5235,7 @@ mod translate_to_hand_tests {
             mod_spawns: Default::default(),
             frame_models: Default::default(),
             resolved: Default::default(),
+            armor_atlases: Default::default(),
         };
         let (alpha, camera) = (0.5, glam::DVec3::new(-2.0, 1.0, 3.0));
         let (posed, poses, _) = posed_body(&m, alpha, &data);
@@ -5677,6 +5686,7 @@ mod compile_part_tests {
             resolved: Default::default(),
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
+            armor_atlases: Default::default(),
         };
         // The outer layer's sprite apart from the body's, so the two draws differ.
         let atlas = |texture: &str| {

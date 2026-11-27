@@ -6,6 +6,8 @@
 use super::*;
 
 impl Game<'_> {
+    // Android's alone; the desktop build doesn't reach it.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     /// Waits until the world resources the title's start loads on a worker (`rest_loader`) are
     /// in: the items, mobs and recipes `Resources::rest` holds.
     pub(in super::super) fn wait_world_rest(&mut self) -> Result<()> {

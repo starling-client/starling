@@ -6842,6 +6842,7 @@ mod tests {
     /// Settings and controller labels follow the selected language (#1927).
     #[test]
     fn sunrise_option_pages_follow_the_language() {
+        crate::starling_text::install();
         let (texts, missed) = page_texts("de_de", &[Page::Sunrise, Page::Extras, Page::PadBinds]);
         for want in [
             "Weicher Chat: Aus",

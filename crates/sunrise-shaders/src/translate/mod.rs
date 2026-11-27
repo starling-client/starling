@@ -2688,10 +2688,16 @@ layout(local_size_x = 1) in;
         };
         let vertex = preprocess(&pack, "gbuffers_terrain.vsh", &m);
         let fragment = preprocess(&pack, "gbuffers_terrain.fsh", &m);
-        let drawn = translate_gbuffers(&vertex, &fragment, Target::Buffers, &inputs)
+        let drawn = translate_gbuffers(
+            &vertex,
+            &fragment,
+            Target::Buffers,
+            &inputs,
+            InterfaceLimits::WGPU_DEFAULT,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        let shadow = translate_shadow(&vertex, &fragment, &inputs, InterfaceLimits::WGPU_DEFAULT)
             .unwrap_or_else(|e| panic!("{e:?}"));
-        let shadow =
-            translate_shadow(&vertex, &fragment, &inputs).unwrap_or_else(|e| panic!("{e:?}"));
         for p in [&drawn, &shadow] {
             let names: Vec<&str> = p
                 .interface
@@ -3448,6 +3454,7 @@ in VertexData {{ {member} }} vIn;
             &preprocess(&pack, "gbuffers_terrain.fsh", &m),
             Target::Buffers,
             &game,
+            InterfaceLimits::WGPU_DEFAULT,
         )
         .unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(p.interface.prepass_uv, Some(16));

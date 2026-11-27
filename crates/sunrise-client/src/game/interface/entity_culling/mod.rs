@@ -383,6 +383,7 @@ mod precheck_envelope_tests {
             biome_tags: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
+            armor_atlases: Default::default(),
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
         };

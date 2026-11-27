@@ -76,12 +76,6 @@ class CommercialDenylistTests(unittest.TestCase):
             "crates/sunrise-client/src/game/cosmetics.rs",
             "crates/sunrise-client/src/game/interface/cosmetics/emotes.rs",
             "crates/sunrise-official-servers/src/lib.rs",
-            "launcher/src/partner.rs",
-            "launcher/src/shop/mod.rs",
-            "launcher/src/wardrobe.rs",
-            "launcher/src/wardrobe_page.rs",
-            "launcher/assets/sculk-banner.webp",
-            "launcher/src/main.rs",
         ]
         for path in cases:
             with self.subTest(path=path), TemporaryDirectory() as directory:
@@ -96,6 +90,9 @@ class CommercialDenylistTests(unittest.TestCase):
             "crates/sunrise-official/Cargo.toml",
             "docs/cosmetics.md",
             "crates/sunrise-client/src/game/interface/names.rs",
+            # Starling keeps its own launcher/ tree (check_public_tree.py REMOVED_TREE).
+            "launcher/src/main.rs",
+            "launcher/src/wardrobe.rs",
         ]
         with TemporaryDirectory() as directory:
             self.repo(directory, [(path, "ok\n") for path in allowed])

@@ -492,12 +492,14 @@ impl Game<'_> {
         }
         // Outside a run, a window whose grab is the system's holds it exactly while the game
         // has it grabbed; only a run leaves the two apart.
-        if regrab_after_run(
-            cfg!(target_os = "android"),
-            self.internal_grab(),
-            self.captured,
-            self.capture_mode.is_some(),
-        ) {
+        // Starling: never on Android, whose grab is the activity's pointer capture and never a
+        // grab mode (`capture` leaves `capture_mode` at None), so the two never match there:
+        // grabbing again every frame asked Android for the capture some 120 times a second, threw
+        // each frame's first mouse move away and pressed the held keys again (#467, #499).
+        if !cfg!(target_os = "android")
+            && !self.internal_grab()
+            && self.captured != self.capture_mode.is_some()
+        {
             let grab = self.captured;
             self.captured = self.capture_mode.is_some();
             self.capture(grab);
@@ -599,7 +601,7 @@ mod tests {
     mod starling;
     #[allow(unused_imports)]
     use self::starling::*;
-    use super::{regrab_after_run, studio_suppresses_focus_pause, top_screen_pauses};
+    use super::{studio_suppresses_focus_pause, top_screen_pauses};
 
     #[test]
     #[ignore = "daily"]

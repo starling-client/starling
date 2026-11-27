@@ -5,6 +5,8 @@
 #[allow(unused_imports)]
 use super::*;
 
+// Android's alone; the desktop build doesn't reach it.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 /// A `neoforge:composite` (or `forge:composite`) model as one plain model: its own elements, then
 /// each child's, the children's texture slots renamed `<child>_<slot>` so two children's `#0`
 /// stay apart (a slot a child does not set is the composite's). Only children written out in

@@ -48,7 +48,7 @@ jobs:
       - name: Python tests
         run: |
           set +e
-          python -m unittest discover -s tests > py.log 2>&1
+          python tools/starling/py_tests.py > py.log 2>&1
           code=$?
           {
             echo "## Python tests: exit $code"

@@ -6,6 +6,8 @@
 use super::*;
 
 impl Game<'_> {
+    // Android's alone; the desktop build doesn't reach it.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     /// Starling: `Screen.hasAltDown`, beside the two above, which native mods made for Sunrise call.
     pub(crate) fn has_alt_down(&self) -> bool {
         self.modifiers.alt_key()

@@ -468,8 +468,8 @@ fn starlings_mods_page_switches_every_mod_and_keeps_dev_and_invalid_ones_inactiv
         });
     }
     let (widgets, ..) = ui.layout(&s, size.0, size.1);
-    // Details opens upstream's Mods screen.
-    assert!(widgets.iter().any(|w| matches!(
+    // No Details: upstream's Mods screen has no Compile, so the page doesn't open it.
+    assert!(!widgets.iter().any(|w| matches!(
         w.kind,
         WKind::Button {
             act: Act::Push(Page::Mods),

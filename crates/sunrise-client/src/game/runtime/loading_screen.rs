@@ -114,6 +114,8 @@ pub(super) struct Loading {
 /// world renderer anyway (a hidden window may never be asked to redraw).
 pub(super) const TITLE_FRAME_WAIT: Duration = Duration::from_secs(1);
 impl Loading {
+    // Starling's start reads `loaded` itself; the tests still take the worker's result here.
+    #[cfg_attr(not(test), allow(dead_code))]
     /// Reconstitute the main-thread error without erasing declaration refusals.
     pub(super) fn take_worker_result(&mut self) -> Option<Result<Loaded>> {
         self.loaded.take().map(|result| result.map_err(Into::into))

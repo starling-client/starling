@@ -455,19 +455,19 @@ impl Game<'_> {
         // Sunrise's text inputs answer whether they took the text: a mirrored field always does.
         match self.text_context() {
             Some("sign") => {
-                let _ = self.sign_input(None, Some(text));
+                self.sign_input(None, Some(text));
             }
             Some("book") => {
                 let _ = self.book_input(None, Some(text));
             }
             Some("anvil") => {
-                let _ = self.station_text(Some(text), false);
+                self.station_text(Some(text), false);
             }
             Some("creative") => {
-                let _ = self.creative_search_edit(Some(text));
+                self.creative_search_edit(Some(text));
             }
             Some("title") => {
-                let _ = self.title_edit(Some(text), false);
+                self.title_edit(Some(text), false);
             }
             #[cfg(target_os = "android")]
             Some("catalog") => self.catalog_type(text),
@@ -483,30 +483,30 @@ impl Game<'_> {
                 let _ = self.chat_key_code(key, None);
             }
             Some("sign") => {
-                let _ = self.sign_input(Some(key), None);
+                self.sign_input(Some(key), None);
             }
             Some("book") => {
                 let _ = self.book_input(Some(key), None);
             }
             Some("command") => match key {
                 KeyCode::Enter | KeyCode::NumpadEnter => {
-                    let _ = self.command_block_done();
+                    self.command_block_done();
                 }
                 _ => {
                     let _ = self.command_block_key_code(key, None, None);
                 }
             },
             Some("anvil") if key == KeyCode::Backspace => {
-                let _ = self.station_text(None, true);
+                self.station_text(None, true);
             }
             Some("creative") if key == KeyCode::Backspace => {
-                let _ = self.creative_search_backspace(false);
+                self.creative_search_backspace(false);
             }
             Some("recipe") if key == KeyCode::Backspace => {
-                let _ = self.recipe_text(None, true);
+                self.recipe_text(None, true);
             }
             Some("world") if key == KeyCode::Backspace => {
-                let _ = self.world_options_text(None);
+                self.world_options_text(None);
             }
             // As the options take them from a keyboard: Enter keeps Skin Customization's name or
             // leaves a custom button's box, Tab moves the focus on.
@@ -532,7 +532,7 @@ impl Game<'_> {
                     }
                 }
                 KeyCode::Backspace => {
-                    let _ = self.title_edit(None, true);
+                    self.title_edit(None, true);
                 }
                 KeyCode::Tab => {
                     if let Some(t) = self.title.as_mut() {

@@ -10,7 +10,11 @@ from unittest import mock
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 spec = importlib.util.spec_from_file_location("android_native_sdk_check", TOOLS / "android_native_sdk.py")
 sdk = importlib.util.module_from_spec(spec)
+# The tool puts tools/ and packaging/android first on sys.path for its imports; left there, tools/'s
+# test_*.py would shadow tests/'s same-named modules for the rest of the discovery.
+_path = list(sys.path)
 spec.loader.exec_module(sdk)
+sys.path[:] = _path
 
 
 def error(package_id, message, code="E0308", file="src/lib.rs", line=7):

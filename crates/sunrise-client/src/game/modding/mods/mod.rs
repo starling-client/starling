@@ -1012,6 +1012,8 @@ pub(super) fn register_particles(role: ExecutionRole) -> sunrise_client::Result<
     Ok(())
 }
 
+// Android's alone; the desktop build doesn't reach it.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 /// What [`content_root`] tells a loading screen while it works.
 pub(super) enum ContentNote<'a> {
     /// A mod's assets coming from Modrinth: its name, and the bytes so far and in all.
@@ -1025,6 +1027,8 @@ pub(super) enum ContentNote<'a> {
 }
 
 impl ContentNote<'_> {
+    // Android's alone; the desktop build doesn't reach it.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     /// The loading screen's line for it.
     pub(super) fn text(&self) -> String {
         let mb = |bytes: u64| bytes as f64 / 1_000_000.0;

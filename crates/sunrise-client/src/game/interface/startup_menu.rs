@@ -1810,6 +1810,7 @@ mod tests {
                 let mut menu = StartupMenu::default();
                 menu.set_root(
                     scratch.path().to_path_buf(),
+                    None,
                     &Settings::default(),
                     Arc::from([]),
                     "",

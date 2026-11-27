@@ -1452,7 +1452,6 @@ mod tests {
             pois: Default::default(),
             species_placements: Default::default(),
             armor_atlases: Default::default(),
-            equipment: Default::default(),
             mod_spawns: Default::default(),
             vanilla_spawn_placements: None,
             resolved: Default::default(),
