@@ -610,10 +610,6 @@ impl Game<'_> {
                 });
             }
         }
-<<<<<<< HEAD
-        self.remote_name_tags(camera, &mut tags);
-||||||| 46c00106def
-=======
         // DisplayRenderer.submit -> EntityRenderer.shouldShowName: uses the same visibility
         // decision and per-entity partial tick as the display itself, within 64 blocks.
         let scale = self.view_scale();
@@ -679,7 +675,7 @@ impl Game<'_> {
                 score: false,
             });
         }
->>>>>>> ed6772e2118
+        self.remote_name_tags(camera, &mut tags);
         tags
     }
     /// `SubmitNodeCollection.submitNameTag`: a discrete name is drawn once,

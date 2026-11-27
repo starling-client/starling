@@ -2,16 +2,8 @@
 //! overlays keep clear of. `hud` empties it each frame and `hud_layers` fills it in before the
 //! world's HUD draws, into `ui.room`; the controller notice and radial menu read it. With it, the frame's `motion::Clock` (`hud_clock`), and whether an
 //! overlay holds the view (`overlay_holds_view`), which what vanilla draws there gives way to.
-<<<<<<< HEAD
 use super::{Game, Screen};
 use sunrise_client::hud::{HudBatch, HudVertex};
-||||||| 46c00106def
-use super::Game;
-use sunrise_client::hud::{HudBatch, HudVertex};
-=======
-use super::Game;
-use sunrise_client::hud::HudVertex;
->>>>>>> ed6772e2118
 use sunrise_client::hud_kit::motion::Clock;
 use sunrise_client::hud_kit::room::{Keep, Room};
 use sunrise_client::{boss_overlay, hud_layout, hud_overlays};

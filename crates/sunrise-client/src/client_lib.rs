@@ -210,12 +210,8 @@ pub mod tick_chunk_membership;
 pub mod ticket_levels;
 pub mod title;
 pub mod toasts;
-<<<<<<< HEAD
-pub mod touch;
-||||||| 46c00106def
-=======
 pub mod tooltip_components;
->>>>>>> ed6772e2118
+pub mod touch;
 pub mod travel_gate;
 pub mod ui_theme;
 pub mod vanillagen;

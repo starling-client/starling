@@ -249,12 +249,6 @@ impl Game<'_> {
         raw: KeyCode,
         source: Source,
     ) -> Result<()> {
-<<<<<<< HEAD
-        if self.mobile_holds_key(key, pressed) {
-            return Ok(());
-        }
-||||||| 46c00106def
-=======
         self.mapped_key_dispatch(
             key,
             pressed,
@@ -273,7 +267,9 @@ impl Game<'_> {
         source: Source,
         vanilla_queued: bool,
     ) -> Result<()> {
->>>>>>> ed6772e2118
+        if self.mobile_holds_key(key, pressed) {
+            return Ok(());
+        }
         if self.screen == Screen::Playing && self.replay.playing() {
             if !pressed {
                 self.release_device_key(&key, source);

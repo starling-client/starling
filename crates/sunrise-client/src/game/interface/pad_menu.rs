@@ -2797,16 +2797,10 @@ impl Game<'_> {
 
     /// What a key of the on-screen keyboard does: the same as a typed key in
     /// the field that has focus.
-<<<<<<< HEAD
     pub(in crate::game) fn pad_osk_output(&mut self, out: osk::Output) {
-||||||| 46c00106def
-    fn pad_osk_output(&mut self, out: osk::Output) {
-=======
-    pub(super) fn pad_osk_output(&mut self, out: osk::Output) {
         if self.context_menu_open() {
             return;
         }
->>>>>>> ed6772e2118
         use osk::Output;
         let (key, text) = match &out {
             Output::Text(t) => (None, Some(t.as_str())),

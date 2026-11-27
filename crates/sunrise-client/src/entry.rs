@@ -62,11 +62,8 @@ pub fn prepare() -> Startup {
     };
     #[cfg(not(target_os = "android"))]
     let capture = sunrise_mod_package::holder::acquire(&launch);
-<<<<<<< HEAD
     #[cfg(target_os = "android")]
     let capture = None;
-||||||| 46c00106def
-=======
     // Native libraries (including their initializers and hook factories) have not run yet.
     TICKET_ACTIVATION.get_or_init(|| {
         TicketActivation::take_for_startup().unwrap_or_else(|| {
@@ -74,7 +71,6 @@ pub fn prepare() -> Startup {
             std::process::exit(game::exit_code::ERROR);
         })
     });
->>>>>>> ed6772e2118
     Startup {
         launch,
         options,

@@ -58,14 +58,10 @@ impl Game<'_> {
             // `title_edit` types into it).
             return title.has_caret_field() || title.focused_field().is_some();
         }
-<<<<<<< ours
         if self.sign_edit.is_some() || matches!(self.book, Some(BookScreen::Edit { .. })) {
             return true;
         }
         let focused = match self.screen {
-=======
-        match self.screen {
->>>>>>> theirs
             Screen::Chat | Screen::CommandBlock | Screen::Social => true,
             Screen::DebugOptions => self
                 .debug_options

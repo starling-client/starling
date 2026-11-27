@@ -991,20 +991,10 @@ impl Game<'_> {
             return Ok(false);
         };
         let [wx, wy, ww, wh] = layout.warning;
-<<<<<<< HEAD
         let local = self.dialogs.open.as_ref().is_some_and(|o| o.local);
         if !local && ui::hovered(cursor, wx, wy, ww, wh) {
-            self.audio.play_button_click();
-            self.dialogs.warning = true;
-||||||| 46c00106def
-        if ui::hovered(cursor, wx, wy, ww, wh) {
-            self.audio.play_button_click();
-            self.dialogs.warning = true;
-=======
-        if ui::hovered(cursor, wx, wy, ww, wh) {
             self.play_audio_button_click();
             self.open_screen_overlay("dialog", |game| game.dialogs.warning = true);
->>>>>>> ed6772e2118
             return Ok(true);
         }
         let shift = self.modifiers.shift_key();
