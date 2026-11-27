@@ -9,7 +9,7 @@ impl HudAtlas {
     /// Pack against a skyline so space below shorter neighbours stays usable.
     /// Pixel UI must not be reduced merely because tall shelves leave gaps.
     #[cfg(any(target_os = "android", test))]
-    pub(super) fn mobile_layout(
+    pub(crate) fn mobile_layout(
         images: &[PackedImage],
         maximum: u32,
     ) -> Result<(u32, Vec<(u32, u32)>, u32)> {
@@ -77,7 +77,7 @@ impl HudAtlas {
     /// Fit static sprites to a small adapter without shrinking pixel icons, glyphs or dynamic
     /// map/skin/GUI slots. Terrain uses separate texture arrays and is unchanged.
     #[cfg(any(target_os = "android", test))]
-    pub(super) fn fit_mobile_atlas(
+    pub(crate) fn fit_mobile_atlas(
         images: &mut [PackedImage],
         gui_sizes: &mut HashMap<String, (u32, u32)>,
         flags: &HashMap<String, TextureFlags>,
@@ -155,7 +155,7 @@ impl HudAtlas {
     /// then the largest of what is left, until they do. A sprite's `Rect` keeps its size in
     /// `full_sizes` and draws the same, with fewer texels. What is written or read by the texel
     /// keeps its size: the run-time slots, the fonts, and the sprites with a wrapped border.
-    pub(super) fn layout_within(
+    pub(crate) fn layout_within(
         images: &mut Vec<PackedImage>,
         animated: &mut Vec<String>,
         extras: &HashSet<String>,

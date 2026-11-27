@@ -4,6 +4,8 @@
 
 #[allow(unused_imports)]
 use super::*;
+// The device's Starling checks live in gfx/device/starling.rs since the move out of Sunrise's files.
+use crate::gfx::device::{renders_depth, rogue_vulkan_crashes};
 
 #[test]
 pub(super) fn a_clamped_shadow_view_keeps_what_lies_toward_the_light() {
