@@ -39,8 +39,8 @@ pub struct BootRenderer {
     uploads: upload::Uploads,
     panorama: panorama::Panorama,
     depth: wgpu::TextureView,
-    /// Kept so the atlas and glint views stay alive for the HUD's bind group.
-    textures: [wgpu::Texture; 3],
+    /// Kept so the atlas, glint and lightmap views stay alive for the HUD's bind group.
+    textures: [wgpu::Texture; 4],
     /// The window is in the background, so no frame draws (`Renderer::detached`).
     pub detached: bool,
     /// `graphics::RENDERER_MARKER`, written before this opened the device: removed with the first
@@ -53,7 +53,7 @@ pub struct BootRenderer {
 struct Drawing {
     hud: HudRenderer,
     panorama: panorama::Panorama,
-    textures: [wgpu::Texture; 3],
+    textures: [wgpu::Texture; 4],
 }
 
 impl Drawing {
@@ -79,6 +79,9 @@ impl Drawing {
         static NO_GLINT: [u8; 4] = [0; 4];
         let glint_texture = texture(device, queue, "Boot glint", &NO_GLINT, 1, 1);
         let glint_armor_texture = texture(device, queue, "Boot armor glint", &NO_GLINT, 1, 1);
+        // The HUD's lightmap (items drawn lit): full bright, as the loading screen has no world.
+        static FULL_BRIGHT: [u8; 4] = [255; 4];
+        let lightmap_texture = texture(device, queue, "Boot lightmap", &FULL_BRIGHT, 1, 1);
         let glint_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Boot glint"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -93,15 +96,18 @@ impl Drawing {
             &atlas_texture.create_view(&Default::default()),
             &glint_texture.create_view(&Default::default()),
             &glint_armor_texture.create_view(&Default::default()),
+            &lightmap_texture.create_view(&Default::default()),
             &glint_sampler,
             // The coverage layer is the world's; the loading screen draws straight to the window.
             false,
+            // A mod's registered atlases are the world's renderer's.
+            Vec::new(),
         )?;
         hud.atlas_texture = Some(atlas_texture.clone());
         Ok(Self {
             hud,
             panorama: panorama::Panorama::new(device, format, faces, gl),
-            textures: [atlas_texture, glint_texture, glint_armor_texture],
+            textures: [atlas_texture, glint_texture, glint_armor_texture, lightmap_texture],
         })
     }
 }

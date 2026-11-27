@@ -10,7 +10,9 @@ use crate::{
     section_mask::SectionMask,
     sprites::SpriteAnimation,
 };
-use glam::{DVec3, Mat4, Vec3, Vec4};
+#[cfg(test)]
+use glam::Vec4;
+use glam::{DVec3, Mat4, Vec3};
 use pack_post::PackPostExt as _;
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
