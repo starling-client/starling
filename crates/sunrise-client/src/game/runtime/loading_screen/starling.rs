@@ -193,7 +193,11 @@ impl Loading {
             self.settings.sunrise.api,
             self.settings.sunrise.translucent_batching,
             &self.settings.sunrise,
-            shader_packs::picked_pack_shape(&self.settings),
+            {
+                // As at the handoff: the request read again for this renderer.
+                self.pick_hdr = Default::default();
+                shader_packs::startup_pack_shape(&self.settings, &mut self.pick_hdr)
+            },
             // What a renderer reads from the display comes after its first frames.
             Default::default(),
         );
@@ -201,8 +205,13 @@ impl Loading {
         // EGL serializes operations on the shared context. Slow GLES shader compilation can
         // hold that lock past wgpu's timeout while the boot renderer is drawing on Android.
         #[cfg(target_os = "android")]
-        if boot.info().backend == wgpu::Backend::Gl {
-            let built = startup::time("renderer.world", || parts.build(None, Some(lent)))
+        let here = boot.info().backend == wgpu::Backend::Gl;
+        #[cfg(not(target_os = "android"))]
+        let here = false;
+        // A mod's registered atlases are read from the GUI atlas (`RendererParts::hud_pages`),
+        // which stays with the loading screen.
+        if here || !gui.atlas.registered.is_empty() {
+            let built = startup::time("renderer.world", || parts.build(lent.device()))
                 .map(|(renderer, pixels)| (renderer, pixels.into_owned()));
             // As a build on the thread that fails (`poll_world_renderer`): these resources are
             // done with. Android keeps the loop running after a failure, and would build from
@@ -225,7 +234,7 @@ impl Loading {
         let thread = std::thread::Builder::new()
             .name("world-renderer".into())
             .spawn(move || {
-                startup::time("renderer.world", || parts.build(None, Some(lent)))
+                startup::time("renderer.world", || parts.build(lent.device()))
                     .map(|(renderer, pixels)| (renderer, pixels.into_owned()))
                     .map_err(|e| e.to_string())
             })?;

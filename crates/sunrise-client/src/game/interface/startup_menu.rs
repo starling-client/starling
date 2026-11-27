@@ -66,14 +66,8 @@ pub(super) struct StartupMenu {
     pub reload_packs: bool,
     /// A committed client pack selection, independent of other reload requests.
     pub(super) pack_selection_revision: u64,
-<<<<<<< ours
-    /// Browse mods' worker (`mod_browser`).
-    mod_jobs: super::mod_browser::Jobs,
     pub perf: sunrise_client::telemetry::Session,
     pub(super) diagnostic_frame: Option<Instant>,
-=======
-    perf: sunrise_client::telemetry::Session,
->>>>>>> theirs
 }
 
 impl StartupMenu {
@@ -768,24 +762,12 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
-<<<<<<< ours
                 Event::ButtonClick => {
                     if let Some(audio) = &mut self.audio {
                         audio.play_button_click();
                     }
                 }
                 Event::TouchLayout => self.open_menu_touch_editor(),
-                Event::BrowseMods => {
-                    let ui = &mut self.menu.options.mod_browser;
-                    self.menu.mod_jobs.browse(ui, Game::game_dir());
-                }
-                Event::InstallMod(id) => {
-                    let ui = &mut self.menu.options.mod_browser;
-                    self.menu.mod_jobs.install(ui, Game::game_dir(), id);
-                }
-                Event::OpenModPage(url) => packs::open_uri(&url),
-=======
->>>>>>> theirs
                 // The startup menu has no screen stack for ConfirmLinkScreen; the link opens
                 // directly, as the menu's other links do.
                 Event::OpenLink(url) => packs::open_uri(&url),
@@ -870,7 +852,7 @@ impl Loading {
                 // The HUD editor needs a world: its button is inactive here.
                 Event::NativeSettings(_)
                 | Event::NativeSetting(..)
-<<<<<<< ours
+                | Event::ModConfigScreen(_)
                 | Event::HudEditor
                 | Event::OpenCatalog(_)
                 | Event::NativeGame(_) => {}
@@ -886,15 +868,6 @@ impl Loading {
                 // The startup menu runs before the game opens a control socket, and has no music
                 // tracks to list or play.
                 Event::CopyAgentDetails
-=======
-                | Event::ModConfigScreen(_)
-                | Event::HudEditor => {}
-                // The startup menu runs before the game opens a control socket,
-                // and before its sound engine (no clicks, no volume previews,
-                // and no music tracks to list or play).
-                Event::ButtonClick
-                | Event::CopyAgentDetails
->>>>>>> theirs
                 | Event::ToggleRecording
                 | Event::ExportRepro
                 | Event::ListMusicTracks
@@ -1758,12 +1731,10 @@ mod tests {
         Loading {
             window: None,
             renderer: None,
-<<<<<<< ours
             boot_renderer: None,
             world_renderer: None,
-=======
             max_atlas_size: Arc::new(AtomicU32::new(sunrise_client::hud::MAX_ATLAS_SIZE)),
->>>>>>> theirs
+            pick_hdr: Default::default(),
             boot: sunrise_client::hud::HudAtlas::boot(),
             gui: None,
             settings: Settings::default(),

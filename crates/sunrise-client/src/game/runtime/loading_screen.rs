@@ -54,16 +54,16 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
 pub(super) struct Loading {
     pub(super) window: Option<Arc<Window>>,
     pub(super) renderer: Option<Renderer>,
-<<<<<<< ours
     /// What the loading screen draws with until the world's renderer is built from it
     /// (`finish`): the panorama and the HUD, and none of the world's pipelines.
     pub(super) boot_renderer: Option<sunrise_client::gfx::boot::BootRenderer>,
     /// The world's renderer, made on the boot renderer's device while the title stays up.
     pub(super) world_renderer: Option<WorldRenderer>,
-=======
+    /// The pick's HDR request as the world's renderer was made for it (`startup_pack_shape`),
+    /// which the game keeps (`NativeShaders::pick_hdr`).
+    pub(super) pick_hdr: shader_packs::PickHdr,
     /// The opened GPU device's `max_texture_dimension_2d`, shared with the background loader.
     pub(super) max_atlas_size: Arc<AtomicU32>,
->>>>>>> theirs
     /// The boot screen's atlas, until the pack's GUI atlas replaces it.
     pub(super) boot: sunrise_client::hud::HudAtlas,
     pub(super) gui: Option<UiResources>,
@@ -211,7 +211,6 @@ impl Loading {
             });
         let offscreen = self.options.as_ref().is_some_and(|o| o.offscreen);
         let boot_step = startup::step("renderer.boot");
-<<<<<<< ours
         // The menu bundle may have come before the window (Android's setup puts its skin on
         // while the surface is still on its way; `set_ui` then had no window to build for):
         // its atlas, not the boot screen's, is the one its screens' text and sprites name.
@@ -232,6 +231,10 @@ impl Loading {
                 self.settings.sunrise.api,
             ) {
                 Ok(r) => {
+                    self.max_atlas_size.store(
+                        r.device.limits().max_texture_dimension_2d,
+                        Ordering::Relaxed,
+                    );
                     self.renderer = Some(r);
                     None
                 }
@@ -245,6 +248,8 @@ impl Loading {
                 self.settings.sunrise.api,
             ) {
                 Ok(boot) => {
+                    self.max_atlas_size
+                        .store(boot.max_atlas_size(), Ordering::Relaxed);
                     self.boot_renderer = Some(boot);
                     None
                 }
@@ -257,24 +262,6 @@ impl Loading {
         match failed {
             None => {}
             Some(e) => {
-=======
-        match loading_renderer(
-            window.clone(),
-            offscreen,
-            Some(&self.boot),
-            None,
-            None,
-            self.settings.sunrise.api,
-        ) {
-            Ok(r) => {
-                self.max_atlas_size.store(
-                    r.device.limits().max_texture_dimension_2d,
-                    Ordering::Relaxed,
-                );
-                self.renderer = Some(r);
-            }
-            Err(e) => {
->>>>>>> theirs
                 #[cfg(target_os = "windows")]
                 if let Some(stop) = &boot_paint_stop {
                     stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -605,7 +592,6 @@ impl Loading {
             self.started.elapsed().as_secs_f32(),
             self.settings.file.double("panoramaScrollSpeed") as f32,
         );
-<<<<<<< ours
         let diagnostic_prepared = diagnostic_started.elapsed();
         let drawn = if let Some(boot) = &mut self.boot_renderer {
             match boot.render(&batch, yaw, !console && !onboarding) {
@@ -618,17 +604,11 @@ impl Loading {
         } else if let Some(renderer) = &mut self.renderer {
             let mut frame = loading_frame(&batch);
             frame.yaw = yaw;
-            match renderer.render(&frame) {
+            match renderer.render(&frame, None) {
                 Ok(drawn) => drawn,
                 Err(e) => {
                     log::warn!("Sunrise: loading screen frame failed: {e}");
                     false
-=======
-        if let Some(renderer) = &mut self.renderer {
-            match renderer.render(&frame, None) {
-                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
-                    self.title_drawn = true;
->>>>>>> theirs
                 }
             }
         } else {
@@ -779,14 +759,13 @@ impl Loading {
         options.server = None;
         let gui = self.gui.take().ok_or("missing menu bundle")?;
         let window = self.window.clone().ok_or("window closed")?;
-        let filtering = (
-            self.settings.file.int("textureFiltering"),
-            self.settings.file.int("maxAnisotropyBit"),
-        );
+        let filtering = self.settings.texture_atlas_settings();
         let renderer_at = Instant::now();
-<<<<<<< ours
         let renderer_step = startup::step("handoff.renderer");
-        let (renderer, clouds) = match built {
+        // The pick's HDR request as the world's renderer was made for it, with its notes already
+        // logged: `begin_world_renderer`'s, or the one this builds.
+        let mut pick_hdr = std::mem::take(&mut self.pick_hdr);
+        let (renderer, required) = match built {
             Some(mut renderer) => {
                 // The window keeps the one surface it has: the boot renderer's, its last frame
                 // still on it, else (the window came back without one) a new one.
@@ -799,14 +778,14 @@ impl Loading {
                     Some(surface) => renderer.adopt_surface(surface, size.width, size.height)?,
                     None => renderer.resume(size.width, size.height)?,
                 }
-                let clouds = finish_renderer(
+                let required = finish_renderer(
                     &mut renderer,
                     &loaded.pack,
                     &gui,
                     filtering,
                     (self.settings.vsync, self.settings.sunrise.present_mode),
                 )?;
-                (renderer, clouds)
+                (renderer, required)
             }
             None => {
                 // Keep the loader's device and swap in the real textures in one step.
@@ -819,13 +798,16 @@ impl Loading {
                         options.offscreen,
                         &loaded.pack,
                         &gui,
-                        self.renderer.as_ref(),
+                        self.renderer.as_ref().map_or(
+                            sunrise_client::gfx::RendererDevice::New,
+                            sunrise_client::gfx::RendererDevice::Reuse,
+                        ),
                         loaded.renderer_cpu.take(),
                         self.settings.sunrise.api,
                         self.settings.sunrise.translucent_batching,
                         self.settings.vsync,
                         &self.settings.sunrise,
-                        shader_packs::picked_pack_shape(&self.settings),
+                        shader_packs::startup_pack_shape(&self.settings, &mut pick_hdr),
                         self.renderer
                             .as_ref()
                             .map(|r| r.display_reading())
@@ -836,32 +818,6 @@ impl Loading {
             }
         };
         drop(renderer_step);
-=======
-        let mut pick_hdr = shader_packs::PickHdr::default();
-        let (renderer, required) = startup::time("renderer.world", || {
-            build_renderer(
-                window.clone(),
-                options.offscreen,
-                &loaded.pack,
-                &gui,
-                self.renderer.as_ref().map_or(
-                    sunrise_client::gfx::RendererDevice::New,
-                    sunrise_client::gfx::RendererDevice::Reuse,
-                ),
-                loaded.renderer_cpu,
-                self.settings.sunrise.api,
-                self.settings.sunrise.translucent_batching,
-                self.settings.vsync,
-                &self.settings.sunrise,
-                shader_packs::startup_pack_shape(&self.settings, &mut pick_hdr),
-                self.renderer
-                    .as_ref()
-                    .map(|r| r.display_reading())
-                    .unwrap_or_default(),
-                self.settings.texture_atlas_settings(),
-            )
-        })?;
->>>>>>> theirs
         log::info!(
             "Sunrise: world renderer ready after {} ms",
             self.started.elapsed().as_millis()
@@ -1078,20 +1034,6 @@ pub(super) fn preflight_resources(
             "Sunrise's prepared game files at {} are damaged: {problem}",
             root.display(),
         )
-<<<<<<< ours
-    })
-}
-
-/// Which top-level prepared file a killed preparation or an interrupted copy
-/// left unusable. The loader parses these before it can start; naming one
-/// beats serde's bare "expected value at line 1 column 1".
-#[cfg(not(target_os = "android"))]
-pub(super) fn damaged_prepared(root: &std::path::Path) -> Option<String> {
-    let manifest = root.join("sunrise-resources.json");
-    let bytes = std::fs::read(&manifest).ok()?;
-    if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Some("sunrise-resources.json is empty".into());
-=======
     })?;
     let profile = manifest.profile();
     if profile == Profile::Server && !dedicated {
@@ -1101,7 +1043,6 @@ pub(super) fn damaged_prepared(root: &std::path::Path) -> Option<String> {
              client files, then pass --resources FULL_DIR.",
             root.display(),
         ));
->>>>>>> theirs
     }
     let mut problems = manifest.version_problems(root, VERSION_ID);
     if profile == Profile::Server {

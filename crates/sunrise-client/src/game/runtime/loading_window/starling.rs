@@ -28,6 +28,9 @@ pub(in super::super) struct RendererParts<'a> {
     pub(super) pack: Cow<'a, PackResources>,
     // The GUI atlas's RGBA (`HudAtlas::pixels`), its width and its height.
     pub(super) atlas: (Cow<'a, [u8]>, u32, u32),
+    // The GUI atlas, for its registered atlases' pages (`Renderer::new`'s `hud_pages`). None once
+    // owned: `begin_world_renderer` builds on a thread of its own only an atlas without them.
+    pub(super) hud_pages: Option<&'a sunrise_client::hud::HudAtlas>,
     pub(super) glint: (Cow<'a, [u8]>, u32, u32),
     pub(super) glint_armor: (Cow<'a, [u8]>, u32, u32),
     pub(super) panorama: Arc<sunrise_client::gfx::panorama::Faces>,
@@ -68,6 +71,7 @@ impl<'a> RendererParts<'a> {
             offscreen,
             pack: Cow::Borrowed(pack),
             atlas: (atlas_pixels, atlas.width, atlas.height),
+            hud_pages: Some(atlas),
             glint: borrowed(&atlas.glint),
             glint_armor: borrowed(&atlas.glint_armor),
             panorama: gui.panorama.clone(),
@@ -89,6 +93,10 @@ impl<'a> RendererParts<'a> {
             offscreen: self.offscreen,
             pack: Cow::Owned(self.pack.into_owned()),
             atlas: owned(self.atlas),
+            hud_pages: {
+                debug_assert!(self.hud_pages.is_none_or(|a| a.registered.is_empty()));
+                None
+            },
             glint: owned(self.glint),
             glint_armor: owned(self.glint_armor),
             panorama: self.panorama,
@@ -101,13 +109,12 @@ impl<'a> RendererParts<'a> {
         }
     }
 
-    /// `Renderer::new` from these parts, on whichever thread holds them. `previous` is the
-    /// renderer this replaces on the same device; `boot` the loading screen's device
-    /// (`BootRenderer::lend`). The atlas pixels come back with it.
+    /// `Renderer::new` from these parts, on whichever thread holds them, on `device`: the
+    /// renderer's this replaces (`Reuse`), the loading screen's (`Lent::device`) or a new one. The
+    /// atlas pixels come back with it.
     pub(in super::super) fn build(
         self,
-        previous: Option<&Renderer>,
-        boot: Option<sunrise_client::gfx::boot::Lent>,
+        device: RendererDevice<'_>,
     ) -> Result<(Renderer, Cow<'a, [u8]>)> {
         let assets = &self.pack.render;
         // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
@@ -121,9 +128,13 @@ impl<'a> RendererParts<'a> {
             || serde_json::json!({"api":format!("{:?}",self.api)}),
         );
         #[cfg(target_os = "android")]
-        let marker = start_marker(previous);
+        let marker = start_marker(match &device {
+            RendererDevice::Reuse(previous) => Some(*previous),
+            _ => None,
+        });
         let (atlas_pixels, atlas_width, atlas_height) = self.atlas;
-        let renderer = pollster::block_on(Renderer::new(
+        let pack_hdr = self.shader_pack.hdr;
+        let mut renderer = pollster::block_on(Renderer::new(
             self.window,
             self.offscreen,
             &assets.pixels.get(),
@@ -133,13 +144,13 @@ impl<'a> RendererParts<'a> {
             &assets.sprite_mips,
             &assets.animations,
             (&atlas_pixels, atlas_width, atlas_height),
+            self.hud_pages,
             (&self.glint.0, self.glint.1, self.glint.2),
             (&self.glint_armor.0, self.glint_armor.1, self.glint_armor.2),
             (&self.pack.forcefield.2, self.pack.forcefield.0),
             self.panorama,
             prepared,
-            previous,
-            boot,
+            device,
             self.api,
             self.translucent_batching,
             (self.shader_pack.draws_flat, self.shader_pack.starts_wide),
@@ -147,14 +158,11 @@ impl<'a> RendererParts<'a> {
             self.shader_pack.frame(),
             self.display,
         ))?;
+        renderer.pack_hdr = pack_hdr;
         #[cfg(target_os = "android")]
-        let renderer = {
-            let mut renderer = renderer;
-            if let Some(marker) = marker {
-                renderer.forget_start_marker(marker);
-            }
-            renderer
-        };
+        if let Some(marker) = marker {
+            renderer.forget_start_marker(marker);
+        }
         // The pipelines it compiled, for the next start (Android's Vulkan).
         renderer.save_pipeline_cache();
         Ok((renderer, atlas_pixels))

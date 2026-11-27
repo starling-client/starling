@@ -17,10 +17,10 @@ impl Renderer {
         forcefield: (&[u8], u32),
         panorama_faces: Arc<panorama::Faces>,
         prepared: Option<PreparedTextures>,
+        // Starling: the loading screen's device (`Lent::device`) is `Opened` without its surface, this
+        // renderer made on it while the loading screen goes on drawing: its surface comes at the
+        // handover (`adopt_surface`).
         render_device: RendererDevice<'_>,
-        // The loading screen's device (`BootRenderer::lend`), this renderer made on it while the
-        // loading screen goes on drawing: its surface comes at the handover (`adopt_surface`).
-        boot: Option<boot::Lent>,
         api: GraphicsApi,
         translucent_batching: bool,
         (shader_pack, pack_starts_wide): (bool, bool),
@@ -30,24 +30,26 @@ impl Renderer {
         request: output::FrameRequest,
         display: output::DisplayReading,
     ) -> Result<Self> {
-<<<<<<< ours
-        // The window is in the background (Android) while this replaces a renderer that let its
-        // surface go (`suspend`): no surface can be made on it now ("the underlying handle is not
-        // available", a fatal error when loading ended in the background). This one starts
-        // suspended too, with the previous one's window format, and makes its surface on `resume`
-        // (as an offscreen renderer never would).
-        // So is one made on the loading screen's device, whose surface the loading screen keeps
-        // drawing on until the handover (`adopt_surface`).
-        let waits_for_window = !offscreen
-            && (boot.is_some()
-                || previous
-                    .is_some_and(|p| p.suspended && p.surface.is_none() && p.offscreen.is_none()));
-=======
         let previous = match &render_device {
             RendererDevice::Reuse(renderer) => Some(*renderer),
             _ => None,
         };
->>>>>>> theirs
+        // Starling: the window is in the background (Android) while this replaces a renderer that
+        // let its surface go (`suspend`): no surface can be made on it now ("the underlying handle
+        // is not available", a fatal error when loading ended in the background). This one starts
+        // suspended too, with the previous one's window format, and makes its surface on `resume`
+        // (as an offscreen renderer never would).
+        // So is one made on a device opened without its surface: the loading screen's
+        // (`BootRenderer::lend`), whose surface the loading screen keeps drawing on until the
+        // handover (`adopt_surface`).
+        let waits_for_window = !offscreen
+            && match &render_device {
+                RendererDevice::Opened(opened) => opened.surface.is_none(),
+                RendererDevice::Reuse(p) => {
+                    p.suspended && p.surface.is_none() && p.offscreen.is_none()
+                }
+                RendererDevice::New => false,
+            };
         let Opened {
             instance,
             surface,
@@ -56,39 +58,6 @@ impl Renderer {
             queue,
             device_lost,
             configured,
-<<<<<<< ours
-        } = match boot {
-            // Opened by `open_device` too, with the window's configuration and capabilities.
-            Some(boot) => boot.into_opened(),
-            None => match previous {
-                // Reload resources on the same device; replacing live Vulkan
-                // devices can invalidate the driver's swapchain state on the same
-                // window.
-                Some(renderer) => {
-                    describe_adapter(&renderer.adapter);
-                    check_layers(&renderer.adapter, layers)?;
-                    Opened {
-                        surface: if offscreen || waits_for_window {
-                            None
-                        } else {
-                            let spare = renderer
-                                .spare_surface
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .take();
-                            Some(match spare {
-                                Some(surface) => surface,
-                                None => renderer.instance.create_surface(window.clone())?,
-                            })
-                        },
-                        instance: renderer.instance.clone(),
-                        adapter: renderer.adapter.clone(),
-                        device: renderer.device.clone(),
-                        queue: renderer.queue.clone(),
-                        device_lost: renderer.device_lost.clone(),
-                        configured: None,
-                    }
-=======
         } = match render_device {
             // Reload resources on the same device; replacing live Vulkan
             // devices can invalidate the driver's swapchain state on the same
@@ -97,7 +66,7 @@ impl Renderer {
                 describe_adapter(&renderer.adapter);
                 check_layers(&renderer.adapter, layers)?;
                 Opened {
-                    surface: if offscreen {
+                    surface: if offscreen || waits_for_window {
                         None
                     } else {
                         let spare = renderer
@@ -116,19 +85,10 @@ impl Renderer {
                     queue: renderer.queue.clone(),
                     device_lost: renderer.device_lost.clone(),
                     configured: None,
->>>>>>> theirs
                 }
-<<<<<<< ours
-                None => {
-                    let _step = crate::spans::startup::step("renderer.open_device");
-                    open_device(&window, offscreen, api, layers).await?
-                }
-            },
-=======
             }
             RendererDevice::Opened(opened) => *opened,
             RendererDevice::New => Opened::for_window(&window, offscreen, api, layers).await?,
->>>>>>> theirs
         };
         // Computed once: the sprite arrays, the shaders' constants and the
         // shader pack atlas all cut the sprites by it.
@@ -558,7 +518,6 @@ impl Renderer {
         // `solid` in two passes (terrain.wgsl's `opaque_quad`, `mesher::Part`), for the
         // world pass without a shader pack: no cutout first, through a shader that never
         // discards, then the rest.
-<<<<<<< ours
         let split_terrain = splits_solid(&adapter.get_info());
         let solid_split = split_terrain.then(|| {
             (
@@ -580,29 +539,8 @@ impl Renderer {
                 ),
             )
         });
-        // The water mirror's camera sees the world from the other side of the plane, and a
-        // mirrored world view's picture is flipped (`world_views::Flipped`): each turns the
-        // winding round, so their terrain culls the front.
-=======
-        let solid_opaque = solid_in(
-            &layout,
-            "Terrain solid opaque",
-            "vs_terrain_opaque",
-            "fs_opaque",
-            &terrain_buffers,
-            wgpu::Face::Back,
-        );
-        let solid_cutout = solid_in(
-            &layout,
-            "Terrain solid cutout",
-            "vs_terrain_cutout",
-            "fs_solid",
-            &terrain_buffers,
-            wgpu::Face::Back,
-        );
         // A mirrored world view's picture is flipped (`world_views::Flipped`), which turns the
         // winding round, so its terrain culls the front.
->>>>>>> theirs
         let front = |label, fragment, blend| {
             pipeline(
                 label,
@@ -1053,21 +991,6 @@ impl Renderer {
             &emission_stats.view,
             emissive_view,
         );
-<<<<<<< ours
-        let mirror_group = terrain_group(
-            &device,
-            "Water mirror resources",
-            &bindings,
-            &mirror_globals,
-            &sprite_views,
-            &sprite_sampler,
-            &lightmap_view,
-            &lightmap_sampler,
-            &emission_stats.view,
-            emissive_view,
-        );
-=======
->>>>>>> theirs
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
         let instance_capacity = 4096;
@@ -1202,14 +1125,11 @@ impl Renderer {
             }),
         )?;
         hud.atlas_texture = Some(atlas.clone());
-<<<<<<< ours
-        drop(textures_step);
-=======
         // On the same device the previous renderer's dynamic textures are still valid.
         if let Some(previous) = previous {
             hud.share_dynamic(previous.hud.dynamic().clone());
         }
->>>>>>> theirs
+        drop(textures_step);
         let entity_step = crate::spans::startup::step("renderer.entity_pipelines");
         let entity_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sunrise entities"),
@@ -2200,11 +2120,7 @@ impl Renderer {
         let flat_wanted = flat::wanted(&adapter, &device);
         // Metal and phones draw solid terrain in two passes (`splits_solid`): meshes put all
         // their opaque quads first, so each pass draws its part in a run or two.
-<<<<<<< ours
         crate::mesher::group_parts(splits_solid(&adapter.get_info()));
-        // Readable as storage where flat draws run: a shader pack's terrain program reads them.
-=======
-        crate::mesher::group_parts(adapter.get_info().backend == wgpu::Backend::Metal);
         // Readable as storage where flat draws run, or while a `shaders/` pack's terrain programs
         // read them per section (`arena_storage`): it starts as for the picked pack, taken to
         // read them, so the pack loading keeps it (`follow_arena_layout`).
@@ -2216,7 +2132,6 @@ impl Renderer {
         // With a normal stream where the pack's per-section draws read no pages
         // (`follow_arena_layout`), as for the pack's taken to fit with it.
         let arena_normals = pack_starts_wide && !flat_wanted && !terrain_pages;
->>>>>>> theirs
         let arena = arena::Arena::new(
             &device,
             std::mem::size_of::<TerrainVertex>() as u64,
@@ -2269,11 +2184,7 @@ impl Renderer {
         // With flat draws' page groups the per-section solid draws read their vertices from
         // the page too (`Flat::page_group`), in either layout of the solid quads
         // (`mesher::packed`): only the origins stay a vertex buffer, at slot 1.
-<<<<<<< ours
-        let (solid, solid_split, solid_mirror, flipped) = match &flat {
-=======
-        let (solid, solid_opaque, solid_cutout, flipped) = match &flat {
->>>>>>> theirs
+        let (solid, solid_split, flipped) = match &flat {
             Some(f) => {
                 let pulled_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("Sunrise terrain layout (pulled)"),
@@ -2287,7 +2198,6 @@ impl Renderer {
                 let (back, front) = (wgpu::Face::Back, wgpu::Face::Front);
                 (
                     solid("Terrain solid", "vs_section", "fs_solid", back),
-<<<<<<< ours
                     split_terrain.then(|| {
                         (
                             solid(
@@ -2304,39 +2214,10 @@ impl Renderer {
                             ),
                         )
                     }),
-                    pipeline_in(
-                        &pulled_layout,
-                        "Terrain solid (mirrored)",
-                        "vs_section",
-                        "fs_solid_mirror",
-                        &origins,
-                        tri,
-                        Some(front),
-                        true,
-                        true,
-                        None,
-=======
-                    solid(
-                        "Terrain solid opaque",
-                        "vs_section_opaque",
-                        "fs_opaque",
-                        back,
-                    ),
-                    solid(
-                        "Terrain solid cutout",
-                        "vs_section_cutout",
-                        "fs_solid",
-                        back,
->>>>>>> theirs
-                    ),
                     solid("Terrain solid (flipped)", "vs_section", "fs_solid", front),
                 )
             }
-<<<<<<< ours
-            None => (solid, solid_split, solid_mirror, flipped),
-=======
-            None => (solid, solid_opaque, solid_cutout, flipped),
->>>>>>> theirs
+            None => (solid, solid_split, flipped),
         };
         // The solid quads in the compact layout where every pass reads it; the first world
         // frames settle it for the picked pack (`follow_packed_layout`).

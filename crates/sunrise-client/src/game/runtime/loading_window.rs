@@ -1,15 +1,12 @@
 //! The window's first renderer and frames: the renderer built from the prepared textures, the
 //! boot screen's frame, and `start_game`, which turns the loaded resources into a `Game`.
 use super::*;
-<<<<<<< ours
 use std::borrow::Cow;
+use sunrise_client::gfx::RendererDevice;
 #[path = "loading_window/starling.rs"]
 mod starling;
 #[allow(unused_imports)]
 pub use self::starling::*;
-=======
-use sunrise_client::gfx::RendererDevice;
->>>>>>> theirs
 
 /// CPU mip chains for the block sprites and world border.
 pub(super) fn prepare_renderer_textures(
@@ -64,15 +61,15 @@ pub(super) fn build_renderer(
         shader_pack,
         display,
     )
-    .build(previous, None)?;
-    let clouds = finish_renderer(
+    .build(device)?;
+    let required = finish_renderer(
         &mut renderer,
         pack,
         gui,
         filtering,
         (vsync, settings.present_mode),
     )?;
-    Ok((renderer, clouds))
+    Ok((renderer, required))
 }
 
 /// What a renderer built from `RendererParts` still wants, on the main thread: the pack's models,
@@ -82,7 +79,7 @@ pub(super) fn finish_renderer(
     renderer: &mut Renderer,
     pack: &PackResources,
     gui: &UiResources,
-    filtering: (i32, i32),
+    filtering: (i32, i32, i32),
     present: (bool, sunrise_client::graphics::PresentMode),
 ) -> Result<std::result::Result<(), String>> {
     let atlas = &gui.atlas;
@@ -94,42 +91,8 @@ pub(super) fn finish_renderer(
     // Chinese and Japanese menu labels go blank when the loading screen hands
     // over to the game.
     atlas.font.reset_cache();
-<<<<<<< ours
-=======
-    // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
-    let prepared = Some(prepared.unwrap_or_else(|| prepare_renderer_textures(pack)));
-    let atlas_pixels = atlas.pixels();
-    let mut renderer = pollster::block_on(Renderer::new(
-        window,
-        offscreen,
-        &assets.pixels.get(),
-        assets.sprite_size,
-        assets.sprite_minimum_size,
-        assets.texture_layers,
-        &assets.sprite_mips,
-        &assets.animations,
-        (&atlas_pixels, atlas.width, atlas.height),
-        Some(atlas),
-        (&atlas.glint.0, atlas.glint.1, atlas.glint.2),
-        (
-            &atlas.glint_armor.0,
-            atlas.glint_armor.1,
-            atlas.glint_armor.2,
-        ),
-        (&pack.forcefield.2, pack.forcefield.0),
-        gui.panorama.clone(),
-        prepared,
-        device,
-        api,
-        translucent_batching,
-        (shader_pack.draws_flat, shader_pack.starts_wide),
-        settings,
-        shader_pack.frame(),
-        display,
-    ))?;
     // The world's renderer is not loaded yet, and the upload holds only standalone models, which
     // no block state's special part changes; `Game` builds its own geometry once it is.
->>>>>>> theirs
     let (prepared_vertices, prepared_ranges) =
         native_block_entity_draw::StandaloneGeometry::new(pack, gui, None).prepared_upload();
     renderer.install_prepared_models(
@@ -140,22 +103,11 @@ pub(super) fn finish_renderer(
     // The loading renderer may have been built before the saved graphics settings were
     // adopted. Configure the world swapchain before its first gameplay frame instead of
     // waiting for `Game::apply_settings` after the handoff.
-<<<<<<< ours
     renderer.set_present_mode(present.0, present.1);
-    renderer.hud.sprite_animations = atlas
-        .sprite_animations
-        .iter()
-        .map(|(rect, animation)| (*rect, animation.clone(), (usize::MAX, 0, 0)))
-        .collect();
-    renderer.hud.set_text_shader(&renderer.device, {
-=======
-    renderer.set_present_mode(vsync, settings.present_mode);
-    renderer.pack_hdr = shader_pack.hdr;
     renderer.hud.sprite_animations = atlas.renderer_animations();
     // The packs' core shaders: the device refusing a pipeline vanilla requires fails the load,
     // after the renderer is made (`ShaderManager.apply`'s required programs).
     let gui_text = renderer.hud.set_text_shader(&renderer.device, {
->>>>>>> theirs
         let text = &atlas.text_shaders;
         (text.gui.as_deref()).map(|p| (p, &text.expressions.gui[..]))
     });
@@ -193,11 +145,7 @@ pub(super) fn finish_renderer(
         let r = atlas.sprites.get(name)?;
         Some([r.u0, r.v0, r.u1, r.v1])
     })?;
-<<<<<<< ours
-    Ok(clouds)
-=======
-    Ok((renderer, required))
->>>>>>> theirs
+    Ok(required)
 }
 
 /// The loading screen's renderer where there is no window to draw on (`--offscreen`): one atlas
@@ -254,7 +202,6 @@ pub(super) fn loading_renderer(
         panorama,
         None,
         previous.map_or(RendererDevice::New, RendererDevice::Reuse),
-        None,
         api,
         // It draws no terrain.
         false,

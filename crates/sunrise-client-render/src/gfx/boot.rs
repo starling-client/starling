@@ -228,6 +228,12 @@ impl BootRenderer {
         self.adapter.get_info()
     }
 
+    /// The device's largest texture side, which the pack's atlases are stitched within
+    /// (`Opened::max_atlas_size`).
+    pub fn max_atlas_size(&self) -> u32 {
+        self.device.limits().max_texture_dimension_2d
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         let max = self.device.limits().max_texture_dimension_2d;
         let (width, height) = (width.clamp(1, max), height.clamp(1, max));
@@ -373,8 +379,9 @@ impl BootRenderer {
 pub struct Lent(Opened);
 
 impl Lent {
-    pub(crate) fn into_opened(self) -> Opened {
-        self.0
+    /// The device for the world's renderer (`Renderer::new`): opened, its surface still here.
+    pub fn device(self) -> super::RendererDevice<'static> {
+        super::RendererDevice::Opened(Box::new(self.0))
     }
 }
 
