@@ -3647,11 +3647,7 @@ impl Launcher {
             "SuperPerf: {}  •  FastUpload: {}  •  GPU Profile: {}",
             if c.super_perf_mode { "ON" } else { "OFF" },
             if c.fast_chunk_upload { "ON" } else { "OFF" },
-            if c.device.gpu_profile {
-                "ON"
-            } else {
-                "OFF"
-            }
+            if c.device.gpu_profile { "ON" } else { "OFF" }
         );
 
         for (r_idx, (title, val, x_off, y_pos)) in [

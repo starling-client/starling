@@ -510,7 +510,6 @@ impl PerfLab {
             "setups": setups,
         })
     }
-
 }
 
 impl Game<'_> {

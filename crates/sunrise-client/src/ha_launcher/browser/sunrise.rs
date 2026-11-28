@@ -851,4 +851,3 @@ pub fn before_play(home: &Path) {
         }
     });
 }
-

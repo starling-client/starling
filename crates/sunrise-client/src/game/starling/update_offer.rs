@@ -163,7 +163,6 @@ fn download(
     Ok(release.name.clone())
 }
 
-
 impl Game<'_> {
     /// Once at start (the check, in the background), then the download while it runs.
     pub(super) fn poll_update_offer(&mut self) {

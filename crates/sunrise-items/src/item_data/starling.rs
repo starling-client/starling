@@ -17,5 +17,4 @@ impl ItemStack {
             _ => self.item.to_string(),
         }
     }
-
 }

@@ -224,4 +224,3 @@ impl Graphics {
 /// `INTEGRATED_LOD_DISTANCE` at Mobile far detail, whose far terrain costs a fraction of Full's
 /// (on a Snapdragon 8 Gen 2 at LOD distance 128: 3 ms of GPU a frame against 14).
 pub const INTEGRATED_MOBILE_LOD_DISTANCE: u32 = 256;
-
