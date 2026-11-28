@@ -114,16 +114,10 @@ pub(crate) mod client {
         }
         pub fn retain_gamepads(_ids: &[i32]) {}
         pub fn clear_gamepads() {}
-        /// The launcher's process never runs the game: nothing to return from.
-        pub fn take_launcher_return() -> bool {
-            false
-        }
-        // Horizon Android's device knobs, kept for the launcher's own run; the game's process
-        // reads the launcher's settings itself when it starts (`ha_launcher::game_started`).
-        pub fn configure_worker_limit(_limit: u32) {}
-        pub fn configure_cache_budget(_mib: u32) {}
+        // Horizon Android's engine knobs, which its launcher set in its own process. Starling's
+        // game runs in another: the launcher writes these choices into the instance's options
+        // (`Config::apply_experimental_to_game`), where the game reads them.
         pub fn configure_gpu(_batching: bool) {}
-        pub fn configure_graphics(_open_gl: bool) {}
         pub fn set_experimental_leaf_culling(_enabled: bool) {}
         /// Horizon Android's Vulkan start-up marker; Starling's game keeps its own
         /// (`graphics::RENDERER_MARKER`) and goes to OpenGL ES by itself after a failed start.
@@ -369,9 +363,9 @@ pub fn restart_into_game() {
     }
 }
 
-/// The game's process, in the instance `home` of the game folder `folder`: what the launcher's
-/// settings ask of the game's run.
-pub fn game_started(folder: &Path, home: &Path) {
+/// The game's process, in an instance of the game folder `folder`: what the launcher's settings
+/// ask of the game's run that its options don't carry (the performance recording, the UI scale).
+pub fn game_started(folder: &Path) {
     let config = catalog::Config::load(folder);
     if config.record_performance || config.device.gpu_profile {
         if let Err(error) = crate::performance::start(
@@ -387,7 +381,6 @@ pub fn game_started(folder: &Path, home: &Path) {
             log::warn!("Launcher: cannot start the performance recording: {error}");
         }
     }
-    let _ = home;
     // The theme and its motion came with Config::load.
     client::ui_theme::set_ui_scale_percent(config.ui_scale_percent);
 }

@@ -1657,7 +1657,7 @@ pub fn main(
         crate::ha_launcher::run(android_app(), folder);
         finish_and_exit()
     }
-    crate::ha_launcher::game_started(&folder, &home);
+    crate::ha_launcher::game_started(&folder);
     if let Err(error) =
         crate::diagnostics::initialize(&private, serde_json::json!({"abi":std::env::consts::ARCH}))
     {
