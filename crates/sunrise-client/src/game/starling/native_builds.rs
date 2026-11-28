@@ -31,9 +31,9 @@ use sunrise_client::{
 };
 use winit::event::{Touch, TouchPhase};
 
-/// The mod build service (packaging/android/mod_build_server.py), while the file that says where it
-/// is now (`releases::BUILD_SERVER_URL`) has never been read.
-const BUILD_SERVER: &str = "https://191-234-193-205.sslip.io";
+/// Starling's build service (the Compile Worker, as packaging/android/build-server.txt names it),
+/// until the file that says where it is now (`releases::BUILD_SERVER_URL`) has been read once.
+const BUILD_SERVER: &str = "https://starling-compile.starling-client.workers.dev";
 /// Beside the builds: the player's own build server (StarlingActivity.askBuildServer), and the last
 /// address the project published.
 const CUSTOM_SERVER: &str = "build-server";
