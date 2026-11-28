@@ -8,6 +8,8 @@ use std::{
 };
 
 pub const ROOT: &str = "sunrise";
+/// The most entries the file manager lists in one folder.
+const MAX_CHILDREN: usize = 32768;
 const CONFIG_FILES: &[&str] = &[
     "options.txt",
     "sunrise-graphics.txt",
