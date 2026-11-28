@@ -144,7 +144,6 @@ impl Launcher {
             catalog.status = "Previous Vulkan startup was interrupted. Using Vulkan compatibility; you can change Rendering mode in Settings.".into();
         }
         crate::ha_launcher::configure_input_mode(catalog.config.input_host);
-        crate::ha_launcher::device_runtime::configure(catalog.config.device);
         crate::ha_launcher::client::ui_theme::set_ui_scale_percent(catalog.config.ui_scale_percent);
         crate::ha_launcher::client::ui_theme::motion::set_launcher_animations_disabled(
             catalog.config.disable_launcher_animations,
@@ -219,10 +218,6 @@ impl Launcher {
     }
 
     pub(super) fn configure_screen(&self) {
-        crate::ha_launcher::native_ime::configure_screen(
-            self.catalog.config.screen.immersive,
-            self.catalog.config.screen.avoid_cutout,
-        );
         crate::android::apply_display_settings(&self.catalog.config.game_settings(&self.home));
     }
     fn fail(&mut self, error: impl std::fmt::Display) {
@@ -439,7 +434,6 @@ impl Launcher {
     fn launch_game(&mut self) -> Result<()> {
         let installed = crate::ha_launcher::client::official_install::ready(&self.home);
         crate::ha_launcher::configure_input_mode(self.catalog.config.input_host);
-        crate::ha_launcher::device_runtime::configure(self.catalog.config.device);
         crate::ha_launcher::platform::hide();
         self.catalog.config.save(&self.home)?;
         if installed {
@@ -630,9 +624,6 @@ impl ApplicationHandler for Launcher {
         if let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer)
             && let Err(error) = crate::ha_launcher::display::apply(window, renderer)
         {
-            crate::ha_launcher::display::set_scale(
-                crate::ha_launcher::display::RenderScale::default(),
-            );
             self.fail(error);
         }
         if let Some(result) = self.worker.as_ref().and_then(|w| w.try_recv().ok()) {

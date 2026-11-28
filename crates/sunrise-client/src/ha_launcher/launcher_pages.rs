@@ -311,18 +311,12 @@ pub(super) enum Action {
     DeleteProfile(u32),
     ConfirmDeleteProfile(u32),
     Dismiss,
-    Immersive,
     DisplayMarginDelta(DisplayOption, i32),
-    DisplayHz,
-    ChooseDisplayHz(u16),
-    CacheBudget,
-    ChooseCacheBudget(u32),
     ToggleBundled(&'static str),
     WorldFiles,
     GameFiles,
     WorkerLimit,
     ChooseWorkerLimit(u32),
-    PerformanceHints,
     GpuProfile,
     // Video settings actions (options.txt)
     RenderScaleDelta(i32),
@@ -345,7 +339,6 @@ pub(super) enum Action {
     ToggleSuperPerf,
     ToggleBatteryPerf,
     ToggleMaxFpsMode,
-    ToggleZeroLatencyTouch,
     ToggleFastChunkUpload,
     ToggleExperimentalLeaves,
     // Controls & Control Editor actions
@@ -3627,10 +3620,9 @@ impl Launcher {
         let card2_y = card1_y + 52.0;
 
         let gpu_txt = format!(
-            "{}  •  {}% Scale  •  {}",
+            "{}  •  {}% Scale",
             c.renderer.label(),
-            c.game_render_scale(&self.home).percent(),
-            c.device.display_label()
+            c.game_render_scale(&self.home).percent()
         );
         let prof_txt = format!(
             "Profile {}  •  UI {}  •  {}",
@@ -3652,10 +3644,10 @@ impl Launcher {
             }
         );
         let perf_txt = format!(
-            "SuperPerf: {}  •  FastUpload: {}  •  ADPF: {}",
+            "SuperPerf: {}  •  FastUpload: {}  •  GPU Profile: {}",
             if c.super_perf_mode { "ON" } else { "OFF" },
             if c.fast_chunk_upload { "ON" } else { "OFF" },
-            if c.device.performance_hints {
+            if c.device.gpu_profile {
                 "ON"
             } else {
                 "OFF"
@@ -3962,7 +3954,6 @@ impl Launcher {
                 } else {
                     format!("{res_pct}%")
                 };
-                let hz_str = format!("{} v", c.device.display_label());
                 let rd_str = format!("{} chunks", opts.render_distance);
                 let rd_frac = ((opts.render_distance - 2) as f32 / 30.0).clamp(0.0, 1.0);
                 let sd_str = format!("{} chunks", opts.simulation_distance);
@@ -3985,7 +3976,7 @@ impl Launcher {
                 let mut rows = vec![
                     (
                         "DISPLAY, RESOLUTION & RENDERER PIPELINE",
-                        "Hardware GPU backend, 3D resolution scale, refresh rate & display geometry",
+                        "Hardware GPU backend, 3D resolution scale & display geometry",
                         SettingControl::SectionHeader(c.renderer.label(), Icon::Monitor),
                     ),
                     (
@@ -4012,16 +4003,6 @@ impl Launcher {
                                 plus_action: Action::RenderScaleDelta(5),
                             }
                         },
-                    ),
-                    (
-                        "Display refresh rate",
-                        "Preferred Android screen refresh rate (60Hz / 90Hz / 120Hz)",
-                        SettingControl::Button(&hz_str, Action::DisplayHz, false),
-                    ),
-                    (
-                        "Immersive fullscreen",
-                        "Hide Android system navigation bars during launcher and gameplay",
-                        SettingControl::Toggle(c.screen.immersive, Action::Immersive),
                     ),
                     (
                         "IN-GAME GRAPHICS, DISTANCES & MOTION",
@@ -4085,7 +4066,8 @@ impl Launcher {
                     ),
                 ];
                 let values = display_settings::values(&opts);
-                rows.splice(5..5, display_settings::rows(&opts, &values));
+                // After the renderer and the resolution scale, before the video settings.
+                rows.splice(3..3, display_settings::rows(&opts, &values));
                 let max_scroll =
                     (rows.len() as f32 * step_y + extra_ime - (list_bottom - list_top)).max(0.0);
                 self.catalog.scroll = self.catalog.scroll.clamp(0.0, max_scroll);
@@ -4120,19 +4102,10 @@ impl Launcher {
             }
             SettingsCategory::Launcher => {
                 let c = &self.catalog.config;
-                let count = 13;
+                let count = 11;
                 let extra_ime = if ime_top_dp.is_some() { 180.0 } else { 0.0 };
                 let max_scroll =
                     (count as f32 * step_y + extra_ime - (list_bottom - list_top)).max(0.0);
-                if self.catalog.editing == Some("server")
-                    && let Some(ime_y) = ime_top_dp
-                {
-                    let server_y = list_top + 11.0 * step_y - self.catalog.scroll;
-                    if server_y + card_h > ime_y - 12.0 {
-                        self.catalog.scroll = (list_top + 11.0 * step_y + card_h - (ime_y - 16.0))
-                            .clamp(0.0, max_scroll);
-                    }
-                }
                 self.catalog.scroll = self.catalog.scroll.clamp(0.0, max_scroll);
                 self.list_view = Some([list_top, list_bottom, max_scroll]);
 
@@ -4145,19 +4118,9 @@ impl Launcher {
                 } else {
                     format!("{} threads v", c.worker_limit)
                 };
-                let cache_str = if c.cache_budget_mib == 0 {
-                    "Default (80 MiB) v".to_owned()
-                } else {
-                    format!("{} MiB v", c.cache_budget_mib)
-                };
-                let server_str = if c.server.is_empty() {
-                    "Singleplayer / Tap to set".to_owned()
-                } else {
-                    c.server.clone()
-                };
                 let game_anim_off = c.disable_game_animations || touch_cfg.disable_game_animations;
 
-                let rows: [(&str, &str, SettingControl<'_>); 13] = [
+                let rows: [(&str, &str, SettingControl<'_>); 11] = [
                     (
                         "APPEARANCE, DPI SCALING & MOTION",
                         "Material 3 Expressive theme studio, adaptive phone DPI scaling & animation toggles",
@@ -4192,7 +4155,7 @@ impl Launcher {
                     ),
                     (
                         "PROFILES, WORKER THREADS & STORAGE",
-                        "Isolated game profiles, CPU worker threads, RAM cache & direct server launch",
+                        "Isolated game profiles, input mode, CPU worker threads & game folders",
                         SettingControl::SectionHeader(&profile_str, Icon::Folder),
                     ),
                     (
@@ -4214,22 +4177,6 @@ impl Launcher {
                         "Chunk worker thread ceiling",
                         "Background worldgen and chunk meshing worker limit",
                         SettingControl::Button(&worker_str, Action::WorkerLimit, false),
-                    ),
-                    (
-                        "Reusable RAM cache budget",
-                        "Pooled audio & mesh buffer cache ceiling",
-                        SettingControl::Button(&cache_str, Action::CacheBudget, false),
-                    ),
-                    (
-                        "Quick-join server address",
-                        "Optional server IP:port to connect immediately on Play",
-                        SettingControl::TextField {
-                            label: "SERVER IP",
-                            value: &c.server,
-                            hint: &server_str,
-                            active: self.catalog.editing == Some("server"),
-                            action: Action::Field("server"),
-                        },
                     ),
                     (
                         "Open game & world folders",
@@ -5231,7 +5178,7 @@ impl Launcher {
             }
             SettingsCategory::Experimental => {
                 let c = &self.catalog.config;
-                let count = 10;
+                let count = 8;
                 let max_scroll = (count as f32 * step_y - (list_bottom - list_top)).max(0.0);
                 self.catalog.scroll = self.catalog.scroll.clamp(0.0, max_scroll);
                 self.list_view = Some([list_top, list_bottom, max_scroll]);
@@ -5246,7 +5193,7 @@ impl Launcher {
                     "Balanced Default"
                 };
 
-                let rows: [(&str, &str, SettingControl<'_>); 10] = [
+                let rows: [(&str, &str, SettingControl<'_>); 8] = [
                     (
                         "PERFORMANCE PROFILES & GPU PIPELINE",
                         "Hardware-tuned presets for Mali-G52 / Adreno GPUs and high-refresh displays",
@@ -5269,29 +5216,13 @@ impl Launcher {
                     ),
                     (
                         "LOW-LATENCY INPUT, STREAMING & SCHEDULER",
-                        "Direct touch dispatch, 4 MiB chunk upload budget boost & Android ADPF thermal hints",
+                        "4 MiB chunk upload budget boost, GPU pass profiling & leaf culling",
                         SettingControl::SectionHeader("Engine Tuning", Icon::Gear),
-                    ),
-                    (
-                        "Zero-Latency Touch Pipeline",
-                        "Bypasses redundant pointer filtering for instant camera & virtual mouse response",
-                        SettingControl::Toggle(
-                            c.zero_latency_touch,
-                            Action::ToggleZeroLatencyTouch,
-                        ),
                     ),
                     (
                         "Fast Chunk Mesh Upload Boost",
                         "Increases per-frame GPU upload budget to 4 MiB to eliminate movement stutter",
                         SettingControl::Toggle(c.fast_chunk_upload, Action::ToggleFastChunkUpload),
-                    ),
-                    (
-                        "Android ADPF Performance Hints",
-                        "Sends real-time CPU thermal & frame-work hints to the Android scheduler",
-                        SettingControl::Toggle(
-                            c.device.performance_hints,
-                            Action::PerformanceHints,
-                        ),
                     ),
                     (
                         "Detailed GPU Pass Profiling",
@@ -5678,16 +5609,6 @@ impl Launcher {
                 }
                 .into();
             }
-            Some(Action::ToggleZeroLatencyTouch) => {
-                self.catalog.config.zero_latency_touch = !self.catalog.config.zero_latency_touch;
-                self.catalog.config.save(&self.home)?;
-                self.catalog.status = if self.catalog.config.zero_latency_touch {
-                    "Zero-Latency Touch Pipeline active."
-                } else {
-                    "Standard touch pipeline active."
-                }
-                .into();
-            }
             Some(Action::ToggleExperimentalLeaves) => {
                 self.catalog.config.experimental_leaf_culling ^= true;
                 self.catalog.config.save(&self.home)?;
@@ -5948,11 +5869,6 @@ impl Launcher {
             Some(Action::ToggleInventoryControls) => {
                 self.modify_touch_settings(|t| t.inventory_controls = !t.inventory_controls);
             }
-            Some(Action::Immersive) => {
-                self.catalog.config.screen.immersive ^= true;
-                self.catalog.config.save(&self.home)?;
-                self.configure_screen();
-            }
             Some(Action::GameDisplay(option)) => self.open_chooser(chooser::Kind::Display(option)),
             Some(Action::ChooseDisplay(option, value)) => {
                 self.modify_game_settings(|s| option.set(s, value));
@@ -5961,13 +5877,6 @@ impl Launcher {
             }
             Some(Action::DisplayMarginDelta(option, delta)) => {
                 self.modify_game_settings(|s| option.set(s, option.value(s) + delta));
-            }
-            Some(Action::CacheBudget) => self.open_chooser(chooser::Kind::CacheBudget),
-            Some(Action::ChooseCacheBudget(mib)) => {
-                self.catalog.config.cache_budget_mib = mib.min(1024);
-                self.catalog.config.save(&self.home)?;
-                self.chooser = None;
-                self.catalog.status = "Disposable cache budget saved. Applies on next Play; not a total RAM or VRAM limit.".into();
             }
             Some(Action::ToggleBundled(id)) => {
                 self.toggle_bundled_mod(id)?;
@@ -5993,25 +5902,10 @@ impl Launcher {
                 self.chooser = None;
                 self.catalog.status = "Chunk worker ceiling saved. Applies on the next Play; other engine threads are unchanged.".into();
             }
-            Some(Action::DisplayHz) => self.open_chooser(chooser::Kind::DisplayHz),
-            Some(Action::ChooseDisplayHz(hz)) => {
-                self.catalog.config.device.display_hz = hz;
-                self.catalog.config.device.sanitize();
-                self.catalog.config.save(&self.home)?;
-                crate::ha_launcher::device_runtime::configure(self.catalog.config.device);
-                self.chooser = None;
-            }
-            Some(Action::PerformanceHints) => {
-                self.catalog.config.device.performance_hints ^= true;
-                self.catalog.status="ADPF gives Android CPU frame-work hints on supported devices. It does not cap FPS or guarantee a speedup.".into();
-                self.catalog.config.save(&self.home)?;
-                crate::ha_launcher::device_runtime::configure(self.catalog.config.device);
-            }
             Some(Action::GpuProfile) => {
                 self.catalog.config.device.gpu_profile ^= true;
                 self.catalog.status="Detailed GPU profiling records diagnostics and has overhead. Reports remain on this device.".into();
                 self.catalog.config.save(&self.home)?;
-                crate::ha_launcher::device_runtime::configure(self.catalog.config.device);
             }
 
             Some(Action::ModSource(origin)) => {
@@ -6277,7 +6171,6 @@ impl Launcher {
                     "name" => &self.catalog.config.name,
                     "profile_name" => &self.catalog.config.custom_profile_name,
                     "profile_desc" => &self.catalog.config.custom_profile_desc,
-                    "server" => &self.catalog.config.server,
                     "render_scale" => &self.catalog.render_scale_text,
                     "client_id" => &self.catalog.config.microsoft_client_id,
                     "theme_bg" => &self.catalog.config.theme.custom_bg_hex,

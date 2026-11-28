@@ -95,14 +95,6 @@ impl RenderScale {
     }
 }
 
-#[cfg(target_os = "android")]
-static REQUESTED_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
-
-#[cfg(target_os = "android")]
-pub fn set_scale(scale: RenderScale) {
-    REQUESTED_SCALE.store(scale.percent(), std::sync::atomic::Ordering::Relaxed);
-}
-
 /// The launcher draws at the window's own size. Horizon Android lowered its own resolution with
 /// the game's (its winit drew a smaller surface scaled up); Starling's game scales its own frame,
 /// and its winit has no such surface.
@@ -193,20 +185,17 @@ impl Aspect {
     }
 }
 
-/// Client-wide screen choices. Missing preferences start in navigation-free mode.
+/// The screen choices older launchers kept, which [`migrate_preferences`] moves into the game's
+/// options. StarlingActivity keeps the system bars hidden itself.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ScreenPreferences {
-    pub immersive: bool,
     pub avoid_cutout: bool,
     pub aspect: Aspect,
 }
 impl Default for ScreenPreferences {
     fn default() -> Self {
         Self {
-            // Toggling immersive system-bar hiding has freeze reports on some
-            // devices; keep navigation bars visible until that is understood.
-            immersive: false,
             avoid_cutout: false,
             aspect: Aspect::Native,
         }
@@ -216,13 +205,12 @@ impl Default for ScreenPreferences {
 mod screen_tests {
     use super::*;
     #[test]
-    fn missing_screen_preferences_keep_navigation_bars_visible() {
+    fn saved_screen_preferences_read_back() {
         let defaults: ScreenPreferences = serde_json::from_str("{}").unwrap();
-        assert!(!defaults.immersive);
+        assert!(!defaults.avoid_cutout);
         let saved: ScreenPreferences =
             serde_json::from_str(r#"{"immersive":false,"aspect":"classic","avoid_cutout":true}"#)
                 .unwrap();
-        assert!(!saved.immersive);
         assert!(saved.avoid_cutout);
         assert_eq!(saved.aspect, Aspect::Classic);
     }

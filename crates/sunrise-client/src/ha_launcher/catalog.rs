@@ -89,7 +89,6 @@ pub struct Config {
     pub onboarding: OnboardingState,
     pub proxy: Option<String>,
     pub name: String,
-    pub server: String,
     #[serde(skip)]
     pub microsoft_client_id: String,
     pub renderer: RendererMode,
@@ -102,7 +101,6 @@ pub struct Config {
     pub keypad_controls: bool,
     pub record_performance: bool,
     pub worker_limit: u32,
-    pub cache_budget_mib: u32,
     #[serde(flatten)]
     pub device: crate::ha_launcher::device_preferences::Settings,
     pub shader_source: crate::ha_launcher::shader_catalog::Origin,
@@ -115,8 +113,6 @@ pub struct Config {
     pub battery_perf_mode: bool,
     #[serde(default)]
     pub max_fps_mode: bool,
-    #[serde(default = "default_true")]
-    pub zero_latency_touch: bool,
     #[serde(default = "default_true")]
     pub fast_chunk_upload: bool,
     #[serde(default)]
@@ -2140,7 +2136,6 @@ impl Catalog {
             Some("name") => &mut self.config.name,
             Some("profile_name") => &mut self.config.custom_profile_name,
             Some("profile_desc") => &mut self.config.custom_profile_desc,
-            Some("server") => &mut self.config.server,
             Some("render_scale") => &mut self.render_scale_text,
             Some("client_id") => &mut self.config.microsoft_client_id,
             Some("theme_bg") => &mut self.config.theme.custom_bg_hex,

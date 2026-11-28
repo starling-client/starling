@@ -9,8 +9,6 @@ use crate::ha_launcher::client::ui_theme::{Face, Ui, color::with_alpha};
 
 pub(super) enum Kind {
     Display(DisplayOption),
-    DisplayHz,
-    CacheBudget,
     WorkerLimit,
     Renderer,
     RenderScale,
@@ -60,25 +58,6 @@ impl Launcher {
                         .collect(),
                 )
             }
-            Kind::CacheBudget => (
-                "Reusable RAM cache",
-                "Decoded sounds (80%) and empty mesh buffers (20%). Recreated at the same quality. Smaller budgets can increase CPU work. Not total RAM/VRAM. Applies on next Play.",
-                [0, 16, 32, 64, 128, 256]
-                    .into_iter()
-                    .map(|mib| {
-                        (
-                            if mib == 0 {
-                                "Engine default (80 MiB)".into()
-                            } else {
-                                format!("{mib} MiB")
-                            },
-                            String::new(),
-                            Action::ChooseCacheBudget(mib),
-                            c.cache_budget_mib == mib,
-                        )
-                    })
-                    .collect(),
-            ),
             Kind::WorkerLimit => (
                 "Chunk worker limit",
                 "Ceiling for generation and meshing workers, not all app threads. Lower values can reduce CPU contention but slow loading. Applies on next Play.",
@@ -93,25 +72,6 @@ impl Launcher {
                             String::new(),
                             Action::ChooseWorkerLimit(limit),
                             c.worker_limit == limit,
-                        )
-                    })
-                    .collect(),
-            ),
-            Kind::DisplayHz => (
-                "Display refresh rate",
-                "An Android display preference, not a game FPS cap. Unsupported rates may be ignored.",
-                crate::ha_launcher::device_preferences::DISPLAY_RATES
-                    .into_iter()
-                    .map(|hz| {
-                        (
-                            if hz == 0 {
-                                "System default".into()
-                            } else {
-                                format!("{hz} Hz")
-                            },
-                            String::new(),
-                            Action::ChooseDisplayHz(hz),
-                            c.device.display_hz == hz,
                         )
                     })
                     .collect(),

@@ -16,7 +16,6 @@
 
 pub(crate) mod catalog;
 pub(crate) mod device_preferences;
-pub(crate) mod device_runtime;
 pub(crate) mod display;
 pub(crate) mod document_bridge;
 pub(crate) mod document_store;

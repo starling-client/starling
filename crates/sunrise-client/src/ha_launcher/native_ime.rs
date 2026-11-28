@@ -120,6 +120,4 @@ pub fn pick_document() -> bool {
     .is_some()
 }
 
-/// StarlingActivity keeps the system bars hidden and the cutout's insets for the game.
-pub fn configure_screen(_immersive: bool, _avoid_cutout: bool) {}
 pub fn refresh_bounds() {}
