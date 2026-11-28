@@ -445,6 +445,9 @@ def add_code(base, libraries, dex, unsigned, abi=ABI):
 
 def sign(build_tools, aligned, apk, out):
     keystore = os.environ.get("SUNRISE_ANDROID_KEYSTORE")
+    # The debug key keeps the alias and name it had as Horizon Android's: an out/debug.keystore made
+    # then holds its key under that alias, and a new key would change the signature, so a phone
+    # with a debug build installed would refuse the next one as an update.
     alias = os.environ.get("SUNRISE_ANDROID_KEY_ALIAS", "horizon-debug")
     env = dict(os.environ)
     if not keystore:
