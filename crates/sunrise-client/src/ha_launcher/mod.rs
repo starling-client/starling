@@ -310,6 +310,16 @@ pub fn start(private: &Path, home: &Path) -> Start {
     Start::Launcher
 }
 
+/// The instance the launcher chose in the game folder `folder` (`android-launcher.json`'s profile),
+/// as the game's start enters it: for the recovery screen, which runs in a process of its own.
+pub fn chosen_instance(folder: &Path) -> PathBuf {
+    catalog::Config {
+        profile: document_store::profile(folder),
+        ..Default::default()
+    }
+    .profile_home(folder)
+}
+
 /// Keep the Play request until the game draws, so Android recovery retries the same startup.
 pub fn acknowledge_play(private: &Path) {
     if let Err(error) = std::fs::remove_file(private.join(PLAY))

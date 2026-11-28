@@ -1747,9 +1747,10 @@ pub fn recovery_report(
             }
         })
     };
+    // The instance the game played in: a profile past the first has its logs in its own folder.
     let player = value("--player-dir")
         .or_else(|| value("--home"))
-        .unwrap_or_else(|| game.to_path_buf());
+        .unwrap_or_else(|| crate::ha_launcher::chosen_instance(game));
     if export {
         // Exit history can be unavailable on an older Android; logs remain exportable.
         if let Err(error) = crate::diagnostics::recovery_exits(private, env, activity) {

@@ -196,9 +196,30 @@ public final class DiagnosticsActivity extends Activity {
     private File gameFolder() {
         return GameFolder.choose(getFilesDir(), StarlingActivity.sharedFolder(this)).root();
     }
-    /** `graphicsApi` in the game folder's settings file; Auto without one, as the game reads it. */
+    /**
+     * The instance the game plays in, where its settings and renderer marker are: the game folder
+     * for the launcher's first profile, `profiles/profile-N` for another (`profile` in
+     * `android-launcher.json`, as `ha_launcher::chosen_instance` reads it).
+     */
+    private File instanceFolder() {
+        File root = gameFolder();
+        StringBuilder text = new StringBuilder();
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(new File(root, "android-launcher.json")), StandardCharsets.UTF_8))) {
+            for (String line = in.readLine(); line != null; line = in.readLine()) text.append(line).append('\n');
+        } catch (IOException missing) {
+            return root;
+        }
+        int profile;
+        try {
+            profile = new org.json.JSONObject(text.toString()).optInt("profile", 0);
+        } catch (org.json.JSONException unreadable) {
+            return root;
+        }
+        return profile <= 0 ? root : new File(new File(root, "profiles"), "profile-" + profile);
+    }
+    /** `graphicsApi` in the instance's settings file; Auto without one, as the game reads it. */
     private String graphicsApi() {
-        File file = new File(gameFolder(), GRAPHICS_FILE);
+        File file = new File(instanceFolder(), GRAPHICS_FILE);
         try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
             for (String line = in.readLine(); line != null; line = in.readLine()) {
                 if (line.startsWith(GRAPHICS_KEY)) return line.substring(GRAPHICS_KEY.length()).trim();
@@ -213,7 +234,7 @@ public final class DiagnosticsActivity extends Activity {
     }
     /** Writes `api` as the settings file's `graphicsApi` (every other line kept) and drops the marker. */
     private void chooseApi(String api) {
-        File folder = gameFolder();
+        File folder = instanceFolder();
         File file = new File(folder, GRAPHICS_FILE);
         StringBuilder text = new StringBuilder();
         boolean found = false;
