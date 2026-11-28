@@ -380,8 +380,8 @@ impl Config {
         if self.fast_chunk_upload {
             settings.sunrise.upload_budget_kib = settings.sunrise.upload_budget_kib.max(4096);
         }
-        settings.sunrise.cave_culling = true;
-        // Entity culling stays the player's choice in the game's Video Settings (three modes).
+        // Cave and entity culling stay the player's choice in the game's Video Settings: Play
+        // turned cave culling back on at every start, over a player who had turned it off.
         // Starling's game reads the rest from its graphics settings (sunrise-graphics.txt): the
         // workers' ceiling as their number, and the leaf culling as its Hidden mode, leaving a
         // mode the player chose in Video Settings as it is.
