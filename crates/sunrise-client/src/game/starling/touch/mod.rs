@@ -2039,7 +2039,7 @@ impl Game<'_> {
             };
             self.debug_key(key, state);
         } else if pressed {
-            let _ = self.control_key_down(key, key);
+            let _ = self.control_key_down(key);
         } else {
             self.control_key_up(key);
             self.keys.remove(&key);

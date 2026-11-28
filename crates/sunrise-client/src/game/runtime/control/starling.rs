@@ -55,7 +55,7 @@ impl Game<'_> {
     /// A key the phone presses (the back key, the touch controls' keys, the close button), as the
     /// control socket's `key KEY down` goes: through Sunrise's key path (`socket_key_input`, the
     /// window's own), so every screen, prompt and editor takes it as a typed key.
-    pub(in crate::game) fn control_key_down(&mut self, key: KeyCode, _raw: KeyCode) -> Result<()> {
+    pub(in crate::game) fn control_key_down(&mut self, key: KeyCode) -> Result<()> {
         self.socket_key_input(key, "down");
         Ok(())
     }
