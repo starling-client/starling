@@ -464,6 +464,9 @@ impl Launcher {
             {
                 log::warn!("Launcher: could not apply wardrobe choice: {error}");
             }
+            // Registry files taken down since they were installed go off before the game reads
+            // its mod list, by the index kept last time: Play never waits on the network.
+            crate::ha_launcher::browser::sunrise::before_play(&game_home);
             self.controller_edges = Default::default();
             self.controller_repeat = None;
         }
