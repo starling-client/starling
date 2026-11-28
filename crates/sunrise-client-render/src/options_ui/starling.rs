@@ -1205,3 +1205,17 @@ impl OptionsUi {
         self.catalog_buttons = ON_A_PHONE;
     }
 }
+
+impl crate::sunrise_ui::Tab {
+    /// Starling: a tab of Video Settings..., which opens Sunrise Settings' graphics pages and the
+    /// packs' options, as Starling's video screen was.
+    pub(crate) fn video(self) -> bool {
+        matches!(self, Self::Graphics(_) | Self::PackOptions)
+    }
+}
+
+/// Starling: whether Sunrise Settings opened as `page` is Video Settings..., with the graphics
+/// tabs alone (`SunriseScreen::video`); Sunrise Settings... and Gameplay show all of them.
+pub(super) fn video_tabs(page: Page) -> bool {
+    !matches!(page, Page::Sunrise | Page::Extras)
+}

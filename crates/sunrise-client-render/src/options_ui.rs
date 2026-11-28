@@ -8052,8 +8052,8 @@ mod tests {
         assert_eq!(ui.page(), Page::NativeMod(0));
     }
 
-    /// OptionsScreen's Video Settings button opens VideoSettingsScreen, not Sunrise's graphics
-    /// settings, which are Sunrise Settings' first pages.
+    /// Starling: OptionsScreen's Video Settings button opens Sunrise Settings' graphics pages, as
+    /// Starling's video screen was; vanilla's VideoSettingsScreen stays (`sunrise-ctl options`).
     #[test]
     fn sunrise_settings_opens_on_graphics_and_video_settings_opens_vanilla() {
         let s = Settings::default();
@@ -8070,7 +8070,7 @@ mod tests {
         else {
             panic!("no Video Settings button");
         };
-        assert!(matches!(act, Act::Push(Page::Video)), "{act:?}");
+        assert!(matches!(act, Act::Push(Page::Graphics)), "{act:?}");
         // Nothing of Sunrise's graphics screen sits on vanilla's.
         ui.show(Page::Video);
         let (widgets, _, _, _) = ui.layout(&s, 427.0, 4000.0);
@@ -9740,9 +9740,9 @@ mod tests {
             &main[main.len() - 3..],
             [Page::Sunrise, Page::NativeGame, Page::Credits]
         );
-        // Video Settings... is vanilla's VideoSettingsScreen; the graphics settings are Sunrise
-        // Settings'.
-        assert!(main.contains(&Page::Video) && !main.contains(&Page::Graphics));
+        // Starling: Video Settings... is Sunrise Settings' graphics pages, as Starling's video
+        // screen was.
+        assert!(main.contains(&Page::Graphics) && !main.contains(&Page::Video));
         // Sunrise Settings' rows that open Sunrise's other pages: Tools', then Extras'.
         let opens = |s: &Settings| -> Vec<(Tab, Page)> {
             use crate::settings_shell::Screen;

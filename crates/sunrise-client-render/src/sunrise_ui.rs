@@ -102,6 +102,9 @@ pub struct SunriseScreen {
     /// for it, as on the graphics screen, though the value may have been stepped back. A `Cell`:
     /// `Screen::changes`, which sees the change, reads the screen without changing it.
     graphics_changed: std::cell::Cell<bool>,
+    /// Starling: opened as Video Settings..., with the graphics tabs alone (`Tab::video`); as
+    /// Sunrise Settings..., with all of them.
+    pub(crate) video: bool,
 }
 
 impl SunriseScreen {
@@ -218,7 +221,11 @@ impl Screen for SunriseScreen {
     type Page = Tab;
     type Row = SunriseRow;
     fn title(&self) -> &'static str {
-        TITLE
+        if self.video {
+            "options.videoTitle"
+        } else {
+            TITLE
+        }
     }
     /// Gameplay's descriptions run long, as the Extras page's did, and the packs' on Shaders as
     /// the pack list's did.
@@ -244,7 +251,7 @@ impl Screen for SunriseScreen {
     fn sheets(&self, s: &Settings) -> Vec<Sheet<Tab, SunriseRow>> {
         let mut graphics = self.graphics.sheets(s).into_iter();
         let mut sheets = Vec::new();
-        for tab in TABS {
+        for tab in TABS.into_iter().filter(|t| !self.video || t.video()) {
             let made = match tab {
                 Tab::Graphics(page) => {
                     let Some(g) = graphics.find(|g| g.id == page) else {

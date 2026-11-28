@@ -130,9 +130,9 @@ impl OptionsUi {
                     // Everywhere for the layers and Main Hand; `skin_page` adds the name and skin.
                     ("options.skinCustomisation", Some(Page::Skin)),
                     ("options.sounds", Some(Page::Sound)),
-                    // OptionsScreen's Video Settings button: VideoSettingsScreen. Sunrise's
-                    // graphics settings are on Sunrise Settings.
-                    ("options.video", Some(Page::Video)),
+                    // OptionsScreen's Video Settings button. Starling: Sunrise Settings'
+                    // graphics pages, as Starling's video screen was (and Sodium's).
+                    ("options.video", Some(Page::Graphics)),
                     ("options.controls", Some(Page::Controls)),
                     ("options.language", Some(Page::Language)),
                     ("options.chat", Some(Page::Chat)),

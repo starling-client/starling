@@ -30,6 +30,8 @@ impl OptionsUi {
         self.sunrise.screen.graphics.output = self.output;
         if Self::sunrise_tab(self.page()).is_some() {
             self.sunrise_packs();
+            // Starling: Video Settings... shows the graphics tabs alone; Sunrise Settings... all.
+            self.sunrise.screen.video = super::starling::video_tabs(self.page());
         }
         match self.page() {
             page if Self::sunrise_tab(page).is_some() => Some(&mut self.sunrise),
