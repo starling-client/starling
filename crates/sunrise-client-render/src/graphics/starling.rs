@@ -225,4 +225,3 @@ impl Graphics {
 /// (on a Snapdragon 8 Gen 2 at LOD distance 128: 3 ms of GPU a frame against 14).
 pub const INTEGRATED_MOBILE_LOD_DISTANCE: u32 = 256;
 
-impl Graphics {}

@@ -110,12 +110,6 @@ fn loaded_cell() -> &'static Mutex<BTreeSet<String>> {
 pub(super) fn set_loaded(ids: BTreeSet<String>) {
     *loaded_cell().lock().unwrap_or_else(PoisonError::into_inner) = ids;
 }
-// Android's alone; the desktop build doesn't reach it.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-/// Whether this process loaded any content mod, blocks and items or not.
-pub(super) fn any_loaded() -> bool {
-    !loaded().is_empty()
-}
 fn loaded() -> BTreeSet<String> {
     loaded_cell()
         .lock()

@@ -11,11 +11,6 @@ impl PositionSender {
         self.position
     }
 
-    /// The rotation the server was last told by an update.
-    pub fn last_rotation(&self) -> (f32, f32) {
-        self.rotation
-    }
-
     /// The server took a look from another packet (a teleport's acknowledgement, the view's look
     /// before a hit): the next update sends its own look if it is not that one, even when the
     /// baseline has it. With Free Direction steering the look sent is not the view's, and an

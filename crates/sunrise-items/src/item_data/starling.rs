@@ -18,15 +18,4 @@ impl ItemStack {
         }
     }
 
-    /// The equipment asset the stack's own `equippable` names (a server's custom armour).
-    pub fn equippable_asset(&self) -> Option<String> {
-        match self
-            .data()?
-            .other("minecraft:equippable")?
-            .get("asset_id")?
-        {
-            Tag::String(s) => Some(s.to_string_lossy()),
-            _ => None,
-        }
-    }
 }
