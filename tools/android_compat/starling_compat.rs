@@ -255,19 +255,19 @@ impl StarlingLevelEntities for mod_api::LevelRef {
 /// `extract` (its old per-index ones are `insert_at` / `extract_at`), with a handler that answered more than it was
 /// asked counted as nothing moved.
 pub trait StarlingResources<R> {
-    fn insert_any(&self, host: &mut dyn mod_api::ServerHost, tx: &mod_api::Transaction, resource: &R, amount: u32)
+    fn insert_any(&self, host: &mut dyn mod_api::ServerHost, tx: &mod_api::TransactionContext, resource: &R, amount: u32)
     -> u32;
-    fn extract_any(&self, host: &mut dyn mod_api::ServerHost, tx: &mod_api::Transaction, resource: &R, amount: u32)
+    fn extract_any(&self, host: &mut dyn mod_api::ServerHost, tx: &mod_api::TransactionContext, resource: &R, amount: u32)
     -> u32;
 }
 
 impl<R, T: mod_api::ResourceHandler<R> + ?Sized> StarlingResources<R> for T {
-    fn insert_any(&self, host: &mut dyn mod_api::ServerHost, tx: &mod_api::Transaction, resource: &R, amount: u32)
+    fn insert_any(&self, host: &mut dyn mod_api::ServerHost, tx: &mod_api::TransactionContext, resource: &R, amount: u32)
     -> u32 {
         self.insert(host, tx, resource, amount).unwrap_or(0)
     }
 
-    fn extract_any(&self, host: &mut dyn mod_api::ServerHost, tx: &mod_api::Transaction, resource: &R, amount: u32)
+    fn extract_any(&self, host: &mut dyn mod_api::ServerHost, tx: &mod_api::TransactionContext, resource: &R, amount: u32)
     -> u32 {
         self.extract(host, tx, resource, amount).unwrap_or(0)
     }
@@ -281,15 +281,16 @@ pub use mod_api::{ConfigContext, HostSide, PackDiscoveryContext};
 pub use mod_api::*;
 
 /// Horizon's `move_resources(host, from, to, filter, max, tx)` at the root, over Sunrise's `resource_util` one
-/// (whose transaction is optional).
+/// (whose transaction is optional). Since the sync of 27/11 Sunrise's transaction is a `TransactionContext` and the
+/// move answers a `TransactionError` around the `Overanswered` Horizon's answered (which a mod can't build itself).
 pub fn move_resources<'a, R: 'a>(
     host: &mut dyn mod_api::ServerHost,
     from: &'a mod_api::Capability<dyn mod_api::ResourceHandler<R>>,
     to: &'a mod_api::Capability<dyn mod_api::ResourceHandler<R>>,
     filter: impl Fn(&R) -> bool,
     max: u32,
-    tx: &mod_api::Transaction,
-) -> Result<u32, mod_api::Overanswered> {
+    tx: &mod_api::TransactionContext,
+) -> Result<u32, mod_api::TransactionError<mod_api::Overanswered>> {
     mod_api::resource_util::move_resources(host, from, to, filter, max, Some(tx))
 }
 
