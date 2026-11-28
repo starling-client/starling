@@ -290,11 +290,19 @@ pub fn start(private: &Path, home: &Path) -> Start {
     if open {
         acknowledge_play(private);
     }
-    let config = catalog::Config::load(home);
+    let mut config = catalog::Config::load(home);
+    // `Chosen`: the destination the setup dialog asked for. Its Play starts the game this once
+    // (`PLAY`), then the switch decides. The game never marked it done here (its setup reads the
+    // app's private folder), so a launcher chosen there, or switched to later, still opened the
+    // game at every start.
+    if config.onboarding == catalog::OnboardingState::Chosen {
+        config.onboarding = catalog::OnboardingState::Complete;
+        if let Err(error) = config.save(home) {
+            log::warn!("Launcher: could not save the setup's choice: {error}");
+        }
+    }
     display::migrate_preferences(&config, home);
-    if !open
-        && (play || config.open_directly || config.onboarding == catalog::OnboardingState::Chosen)
-    {
+    if !open && (play || config.open_directly) {
         let instance = config.profile_home(home);
         let _ = std::fs::create_dir_all(&instance);
         return Start::Game(instance);

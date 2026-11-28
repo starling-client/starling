@@ -912,8 +912,13 @@ fn put_native_libs(
         .collect();
     let about = serde_json::json!({"mods": mods, "build": own_build()});
     std::fs::write(next.join("build.json"), about.to_string()).map_err(io(&next))?;
-    // What it was made from: a mod replaced under the same id makes it out of date.
-    if let Some(sent) = request_digest() {
+    // What it was made from, when it holds every mod on: a mod replaced under the same id makes
+    // it out of date. One left out (no library on the phone yet) keeps it out of date, so the Mods
+    // page still offers Compile: the record of the whole set hid it.
+    let whole = wanted
+        .iter()
+        .all(|(_, w)| libraries.iter().any(|l| l.id == w.id));
+    if whole && let Some(sent) = request_digest() {
         std::fs::write(next.join(SENT), sent).map_err(io(&next))?;
     }
     let old = folder.with_extension("old");
@@ -1697,7 +1702,9 @@ impl Game<'_> {
         // Starling: a mod turned off (or one on whose library is here) changed what the next start
         // opens without a Compile: say so, with Restart now. Players turned a mod off and saw it
         // keep running, since the game opened its libraries at start.
-        if native_libs_mods() != before {
+        // Libraries of another build open nothing, as none do: made again for this one with no
+        // mod in them is no change to announce.
+        if native_libs_mods().unwrap_or_default() != before.unwrap_or_default() {
             self.native_builds.stage = Some(Stage::Chosen(NATIVE_LIBS.to_owned()));
         }
         if !any_on {
