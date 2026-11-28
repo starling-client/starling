@@ -643,6 +643,18 @@ const PLAYER_FILES: &[&str] = &[
     "options.txt",
 ];
 
+/// What else of the player's moves with the game folder, ahead of `PLAYER_FILES`, though the Files
+/// app shows none of it among the app's own files: the launcher's settings and its other profiles'
+/// instances, what the catalogs installed (their list, the native mods waiting for a Compile) and
+/// the skins.
+const MOVED_TOO: &[&str] = &[
+    "android-launcher.json",
+    "profiles",
+    "mod-browser.json",
+    "sunrise-native-mods",
+    "skins",
+];
+
 /// Folders whose images are the game's own (world icons, skins, pack art), made ahead with a
 /// `.nomedia` so the gallery never lists what lands in them; screenshots are not.
 const NO_MEDIA: &[&str] = &[
@@ -741,8 +753,9 @@ fn game_folder(private: &Path, notes: &mut Vec<String>) -> PathBuf {
 
 /// Copy the player's files to shared storage, then set the private copies aside.
 fn move_player_files(private: &Path, shared: &Path) -> std::io::Result<usize> {
-    let present: Vec<&str> = PLAYER_FILES
+    let present: Vec<&str> = MOVED_TOO
         .iter()
+        .chain(PLAYER_FILES)
         .copied()
         .filter(|name| private.join(name).exists())
         .collect();
