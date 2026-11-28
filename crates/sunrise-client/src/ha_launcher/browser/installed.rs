@@ -317,9 +317,16 @@ pub fn remove(home: &Path, name: &str) -> Result<Entry, String> {
         }
     }
     if let Some(id) = super::sunrise::mod_id(&entry).filter(|_| entry.source == SourceId::Sunrise) {
-        // The `.smod` a mod that turned native left behind (sunrise::install_version).
-        if entry.file.ends_with(".hnmod") {
+        // A native mod's other files: the `.smod` it left in `sunrise-mods/` when it turned
+        // native (sunrise::install_version), and its file under the other name in the native
+        // folder (the game's catalog names it `<id>.smod`, this one `<id>.hnmod`).
+        if let Some((native, _)) = entry.file.split_once('/')
+            && native == "sunrise-native-mods"
+        {
             let _ = fs::remove_file(home.join(super::java::MODS_DIR).join(format!("{id}.smod")));
+            for other in [format!("{id}.smod"), format!("{id}.hnmod")] {
+                let _ = fs::remove_file(home.join(native).join(other));
+            }
         }
         super::java::set_enabled(home, id, false)?;
     }

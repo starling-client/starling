@@ -761,17 +761,24 @@ fn native_mods_dir() -> &'static str {
 }
 
 /// Whether an update to a native version keeps the old file `old`: a mod that turned native
-/// keeps its `.smod` until the player builds the game with the new version. The game runs it
-/// meanwhile and skips it once the native one is built in; removing the mod removes both.
+/// keeps its content `.smod` (in `sunrise-mods/`) until the player builds the game with the new
+/// version. The game runs it meanwhile and skips it once the native one is built in; removing the
+/// mod removes both. An older native file of the mod goes, whatever its name.
 fn stays(native: bool, old: &str) -> bool {
-    native && old.ends_with(".smod")
+    native
+        && old
+            .strip_prefix(java::MODS_DIR)
+            .is_some_and(|rest| rest.starts_with('/') && rest.ends_with(".smod"))
 }
 
-/// The mod id of an installed mod (`sunrise-mods/<id>`, `sunrise-mods/<id>.smod` or
-/// `sunrise-native-mods/<id>.hnmod`).
+/// The mod id of an installed mod (`sunrise-mods/<id>`, `sunrise-mods/<id>.smod`, or
+/// `sunrise-native-mods/<id>.hnmod`, or `<id>.smod` there as the game's catalog names it).
 pub fn mod_id(entry: &installed::Entry) -> Option<&str> {
     if let Some(rest) = entry.file.strip_prefix(native_mods_dir()) {
-        return rest.strip_prefix('/')?.strip_suffix(".hnmod");
+        let file = rest.strip_prefix('/')?;
+        return file
+            .strip_suffix(".hnmod")
+            .or_else(|| file.strip_suffix(".smod"));
     }
     let rest = entry.file.strip_prefix(java::MODS_DIR)?.strip_prefix('/')?;
     Some(rest.strip_suffix(".smod").unwrap_or(rest))
