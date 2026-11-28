@@ -8,6 +8,7 @@
 //! and the release could not install over it (`STARLING_UPDATE_TEST=<version>` makes one ask as
 //! that version, to try the prompt).
 use super::Game;
+use super::native_builds::{density, wrapped};
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::io::{Read, Write};
@@ -162,10 +163,6 @@ fn download(
     Ok(release.name.clone())
 }
 
-/// The UI's scale for a window of `w` x `h` pixels (as `Ui::new`).
-fn density(w: f32, h: f32) -> f32 {
-    (w / 1040.0).min(h / 700.0).clamp(1.0, 4.0)
-}
 
 impl Game<'_> {
     /// Once at start (the check, in the background), then the download while it runs.
@@ -295,21 +292,7 @@ impl Game<'_> {
         ui.fill(0.0, 0.0, w, h, color::with_alpha(color::bg(), 0.72));
         let card_w = (w - 48.0).min(470.0);
         let pad = 22.0;
-        let mut lines = Vec::new();
-        let mut line = String::new();
-        for word in body.split(' ') {
-            let next = if line.is_empty() {
-                word.to_owned()
-            } else {
-                format!("{line} {word}")
-            };
-            if !line.is_empty() && ui.measure(Face::Regular, 14.0, &next) > card_w - 2.0 * pad {
-                lines.push(std::mem::replace(&mut line, word.to_owned()));
-            } else {
-                line = next;
-            }
-        }
-        lines.push(line);
+        let lines = wrapped(&ui, Face::Regular, 14.0, card_w - 2.0 * pad, &body);
         let bar = stage == Stage::Downloading;
         let button_h = 40.0;
         let card_h = pad

@@ -8,6 +8,7 @@
 //! player who set Starling up before the setup made it (game/setup.rs): on a start while Sunrise
 //! Android is installed, until they answer it (Bring them over, then Done; or Not now).
 use super::Game;
+use super::native_builds::{density, wrapped};
 use super::setup::{SUNRISE_LATER, sunrise_answered};
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -114,10 +115,6 @@ fn card_texts(card: Card) -> [&'static str; 4] {
     }
 }
 
-/// The UI's scale for a window of `w` x `h` pixels (as `Ui::new`).
-fn density(w: f32, h: f32) -> f32 {
-    (w / 1040.0).min(h / 700.0).clamp(1.0, 4.0)
-}
 
 impl Game<'_> {
     /// Once at start, then while the player is away in the setting.
@@ -186,21 +183,7 @@ impl Game<'_> {
         ui.fill(0.0, 0.0, w, h, color::with_alpha(color::bg(), 0.72));
         let card_w = (w - 48.0).min(470.0);
         let pad = 22.0;
-        let mut lines = Vec::new();
-        let mut line = String::new();
-        for word in body.split(' ') {
-            let next = if line.is_empty() {
-                word.to_owned()
-            } else {
-                format!("{line} {word}")
-            };
-            if !line.is_empty() && ui.measure(Face::Regular, 14.0, &next) > card_w - 2.0 * pad {
-                lines.push(std::mem::replace(&mut line, word.to_owned()));
-            } else {
-                line = next;
-            }
-        }
-        lines.push(line);
+        let lines = wrapped(&ui, Face::Regular, 14.0, card_w - 2.0 * pad, &body);
         let button_h = 40.0;
         let card_h = pad + 26.0 + 12.0 + lines.len() as f32 * 21.0 + 22.0 + button_h + pad;
         let (x, y) = ((w - card_w) / 2.0, ((h - card_h) / 2.0).max(8.0));
