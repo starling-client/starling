@@ -293,7 +293,7 @@ pub fn cache_dir() -> Option<std::path::PathBuf> {
 }
 
 pub fn open_repository() -> bool {
-    open_url("https://github.com/Vasysik/sunrise-android")
+    open_url("https://github.com/starling-client/starling")
 }
 /// Browse one of the launcher's folders in the system's file manager: Starling's provider
 /// (GameFolderProvider) shows the game folder, the reports are the app's own diagnostics.

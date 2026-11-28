@@ -30,7 +30,7 @@ pub(super) fn agent(url: &str) -> ureq::Agent {
     crate::ha_launcher::port_net::keep("browser", spec.as_deref(), |proxy| {
         let builder = ureq::AgentBuilder::new()
             .user_agent(&format!(
-                "horizon-rust/horizon sunrise-launcher/{} (github.com/horizon-rust/horizon)",
+                "starling-client/starling sunrise-launcher/{} (github.com/starling-client/starling)",
                 crate::ha_launcher::backend::VERSION
             ))
             .timeout_connect(std::time::Duration::from_secs(15))
