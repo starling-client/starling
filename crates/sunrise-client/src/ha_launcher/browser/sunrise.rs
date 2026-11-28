@@ -585,7 +585,7 @@ fn relative(kind: Kind, id: &str, file_name: &str) -> Result<String, String> {
         Kind::Mod => Ok(format!("{}/{id}.smod", java::MODS_DIR)),
         Kind::ResourcePack => Ok(format!("resourcepacks/{file_name}")),
         Kind::Shader => Ok(format!("shaderpacks/{file_name}")),
-        Kind::Modpack => Err("A modpack installs as its own profile (pack::install).".into()),
+        Kind::Modpack => Err("Modpacks can't be installed from here.".into()),
         Kind::DataPack => Err("Sunrise's registry has no data packs.".into()),
     }
 }
@@ -852,5 +852,3 @@ pub fn before_play(home: &Path) {
     });
 }
 
-#[path = "sunrise/pack.rs"]
-pub mod pack;
