@@ -107,7 +107,6 @@
   "starling.perf.guided.intro": "This test build checks what runs fastest on your phone: keep playing normally for a few minutes while it switches how the world is drawn every 30 seconds. The results (GPU, settings and FPS, nothing personal) go to Starling's developers. You can stop it in Options → Diagnostics.",
   "starling.perf.guided.done": "Performance test done: the fastest here is %s (%s fps, against %s with Auto). Options → Diagnostics → Use the fastest switches to it.",
   "starling.perf.guided.done_auto": "Performance test done: Auto is already the fastest here (%s fps). Thank you!",
-  "starling.perf.guided.sent": "The results are on their way to Starling's developers. Thank you!",
   "starling.perf.occlusion_on_short": "occlusion culling",
   "starling.perf.occlusion_off_short": "no occlusion culling",
   "starling.perf.faces_on_short": "hidden faces skipped",

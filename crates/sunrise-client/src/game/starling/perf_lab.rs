@@ -31,7 +31,6 @@ use sunrise_client::{lang, options_ui::Page, text::Text};
 
 const SESSIONS: &str = "perf-sessions.json";
 const CHOICES: &str = "perf-lab.json";
-const REPORTS: &str = "https://191-234-193-205.sslip.io/v1/perf";
 /// No input for this long: the player is away, and frames stop counting.
 const IDLE: Duration = Duration::from_secs(30);
 /// After a menu or a pause, frames count again from this long on (the world settles).
@@ -52,8 +51,6 @@ const STEP_SECONDS: f64 = 30.0;
 const ROUNDS: usize = 2;
 /// A test build starts the guided test on its own after this much play.
 const AUTO_START_SECONDS: f64 = 20.0;
-/// A test build sends its setups again after this much more play.
-const SEND_EVERY_SECONDS: f64 = 600.0;
 /// Below this gain the default stays the one to keep.
 const WORTH_IT: f64 = 1.03;
 
@@ -295,9 +292,8 @@ pub(super) struct PerfLab {
     fastest: Option<(Choices, f64, f64)>,
     /// This APK's version when it is a test build (Starling Preview), looked up once.
     test_build: Option<Option<String>>,
-    /// Seconds of counted play, and when the setups were last sent.
+    /// Seconds of counted play.
     played: f64,
-    sent_at: f64,
     /// Calibrate... under way.
     calibration: Option<Calibration>,
     /// What the last calibration found (kept in `perf-lab.json`).
@@ -322,9 +318,8 @@ fn folder() -> PathBuf {
 
 /// This APK's version where it is a test build: a Starling Preview, never a release, started with
 /// `STARLING_PERF_TEST=1` (a line of `sunrise-args.txt`). Only then does the guided test start on
-/// its own and reports go out. Every Preview started it, once per version, so again with each new
-/// development APK, and `REPORTS` is the Azure gateway, gone since 2026-11-14. A Calibrate button
-/// that sends nothing is to take its place.
+/// its own, once per version. Its results stay on the phone (the log and `perf-sessions.json`):
+/// the gateway that took them is gone since 2026-11-14.
 fn test_build() -> Option<String> {
     #[cfg(target_os = "android")]
     {
@@ -338,29 +333,6 @@ fn test_build() -> Option<String> {
     #[cfg(not(target_os = "android"))]
     {
         None
-    }
-}
-
-/// Sends a report to the build gateway, on a thread of its own.
-fn send(report: Value) {
-    let spawned = std::thread::Builder::new()
-        .name("Performance report".into())
-        .spawn(move || {
-            let body = serde_json::to_vec(&report).unwrap_or_default();
-            let result = ureq::AgentBuilder::new()
-                .timeout_connect(Duration::from_secs(15))
-                .timeout_read(Duration::from_secs(30))
-                .build()
-                .post(REPORTS)
-                .set("Content-Type", "application/json")
-                .send_bytes(&body);
-            match result {
-                Ok(_) => log::info!("Starling: performance report sent ({} bytes)", body.len()),
-                Err(e) => log::warn!("Starling: performance report not sent: {e}"),
-            }
-        });
-    if let Err(e) = spawned {
-        log::warn!("Starling: performance report: {e}");
     }
 }
 
@@ -539,32 +511,6 @@ impl PerfLab {
         })
     }
 
-    /// A report for the gateway: the setups without their histograms.
-    fn report(&self, kind: &str, device: Value, app: &str) -> Value {
-        let setups: Vec<Value> = self
-            .setups
-            .iter()
-            .filter(|s| s.seconds >= 10.0)
-            .map(|s| {
-                json!({
-                    "setup": s.setup,
-                    "summary": s.summary(),
-                    "worst_ms": s.worst_ms,
-                    "thermal_max": s.thermal_max,
-                    "battery_max_c": s.battery_max_c,
-                    "cpu_max_c": s.cpu_max_c,
-                })
-            })
-            .collect();
-        json!({
-            "schema": 1,
-            "kind": kind,
-            "app": app,
-            "version": crate::crash::version(),
-            "device": device,
-            "setups": setups,
-        })
-    }
 }
 
 impl Game<'_> {
@@ -749,14 +695,10 @@ impl Game<'_> {
             && self.perf_lab.device.is_some()
             && self.perf_lab.guided_done.as_deref() != Some(app.as_str())
         {
-            self.perf_lab.guided_done = Some(app.clone());
+            self.perf_lab.guided_done = Some(app);
             self.perf_lab.save_choices();
             self.system_message(Text::literal(lang::get("starling.perf.guided.intro")));
             self.perf_lab_guided_start();
-        }
-        if self.perf_lab.played - self.perf_lab.sent_at >= SEND_EVERY_SECONDS {
-            self.perf_lab.sent_at = self.perf_lab.played;
-            send(self.perf_lab.report("setups", self.perf_lab_device(), &app));
         }
     }
 
@@ -821,8 +763,8 @@ impl Game<'_> {
         }
     }
 
-    /// The guided test ends: the player's choices come back, the fastest way of drawing is
-    /// offered where it beat the device's own, and a test build sends the results.
+    /// The guided test ends: the player's choices come back, and the fastest way of drawing is
+    /// offered where it beat the device's own.
     fn perf_lab_guided_finish(&mut self) {
         let Some(g) = self.perf_lab.guided.take() else {
             return;
@@ -851,20 +793,6 @@ impl Game<'_> {
         };
         self.system_message(Text::literal(message));
         log::info!("Starling: guided performance test done");
-        if let Some(app) = self.perf_lab_test_build() {
-            let mut report = self.perf_lab.report("guided", self.perf_lab_device(), &app);
-            report["guided"] = Value::Array(
-                g.variants
-                    .iter()
-                    .zip(&g.tallies)
-                    .map(|(c, t)| json!({"choices": c, "summary": t.summary()}))
-                    .collect(),
-            );
-            report["setup"] = self.perf_lab_setup();
-            self.perf_lab.sent_at = self.perf_lab.played;
-            send(report);
-            self.system_message(Text::literal(lang::get("starling.perf.guided.sent")));
-        }
     }
 
     /// Writes `perf-sessions.json` where something changed (`now`: and waits for it, as the

@@ -76,7 +76,6 @@
   "starling.perf.guided.intro": "Esta versão de teste vê o que roda mais rápido no seu celular: continue jogando normalmente por alguns minutos enquanto ela troca o jeito de desenhar o mundo a cada 30 segundos. Os resultados (GPU, configurações e FPS, nada pessoal) vão para os desenvolvedores do Starling. Dá para parar em Opções → Diagnóstico.",
   "starling.perf.guided.done": "Teste de desempenho pronto: o mais rápido aqui é %s (%s fps, contra %s no Auto). Opções → Diagnóstico → Usar o mais rápido troca para ele.",
   "starling.perf.guided.done_auto": "Teste de desempenho pronto: o Auto já é o mais rápido aqui (%s fps). Obrigado!",
-  "starling.perf.guided.sent": "Os resultados estão indo para os desenvolvedores do Starling. Obrigado!",
   "starling.perf.occlusion_on_short": "culling de oclusão",
   "starling.perf.occlusion_off_short": "sem culling de oclusão",
   "starling.perf.faces_on_short": "faces escondidas puladas",
