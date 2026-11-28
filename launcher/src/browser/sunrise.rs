@@ -322,9 +322,11 @@ fn tags_of(index: &Index, kind: Kind) -> Vec<String> {
 pub const POLICY: &str = "https://playsunrise.net/mods/policy";
 
 /// Whether the Sunrise project made `p` (the mod policy's "Official": author Sunrise, source in
-/// the horizon-rust organisation).
+/// the sunrise-org organisation, or horizon-rust's from before the move).
 pub fn official(p: &index::Project) -> bool {
-    p.authors == ["Sunrise"] && p.source.starts_with("https://github.com/horizon-rust/")
+    p.authors == ["Sunrise"]
+        && (p.source.starts_with("https://github.com/sunrise-org/")
+            || p.source.starts_with("https://github.com/horizon-rust/"))
 }
 
 /// Whether the registry's project `id` is Sunrise's own ([`official`]), by the index already read
