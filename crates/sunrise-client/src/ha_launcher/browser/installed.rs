@@ -10,6 +10,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const MANIFEST: &str = "mod-browser.json";
+/// The folders of the game folder an entry's file may be in: where either catalog (this
+/// launcher's, or the game's own) installs.
+const INSTALL_FOLDERS: [&str; 5] = [
+    "resourcepacks",
+    "shaderpacks",
+    "mods",
+    super::java::MODS_DIR,
+    "sunrise-native-mods",
+];
 /// How deep required dependencies are followed.
 const MAX_DEPTH: usize = 4;
 
@@ -53,8 +62,32 @@ fn readable_entries<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Entry>
     let entries = Vec::<serde_json::Value>::deserialize(d)?;
     Ok(entries
         .into_iter()
-        .filter_map(|e| serde_json::from_value(e).ok())
+        .filter_map(|e| serde_json::from_value::<Entry>(e).ok())
+        .filter(|e| names_an_installed_file(&e.file))
         .collect())
+}
+
+/// Whether `file` is a path below one of [`INSTALL_FOLDERS`], made of plain names only. The list
+/// is a file of the game folder, on shared storage: an entry pointing anywhere else (`..`, a root,
+/// another folder) is never one the browser put there, and replacing or removing it would reach
+/// the player's other files.
+fn names_an_installed_file(file: &str) -> bool {
+    use std::path::Component;
+    let mut parts = Path::new(file).components();
+    let Some(Component::Normal(folder)) = parts.next() else {
+        return false;
+    };
+    if !INSTALL_FOLDERS.iter().any(|f| folder == *f) {
+        return false;
+    }
+    let mut below = 0;
+    for part in parts {
+        if !matches!(part, Component::Normal(_)) {
+            return false;
+        }
+        below += 1;
+    }
+    below > 0
 }
 
 impl Installed {
