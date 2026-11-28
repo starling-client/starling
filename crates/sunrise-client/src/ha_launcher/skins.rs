@@ -165,17 +165,6 @@ pub fn front(skin: &image::RgbaImage, model: Model) -> Vec<[u8; 4]> {
     out
 }
 
-/// The cape's outside, 10×16 texels.
-pub fn cape_front(cape: &image::RgbaImage) -> Vec<[u8; 4]> {
-    let mut out = Vec::with_capacity(160);
-    for y in 1..17 {
-        for x in 1..11 {
-            out.push(cape.get_pixel(x, y).0);
-        }
-    }
-    out
-}
-
 /// Keeps `file` as `name`'s skin (or cape), checked first.
 pub fn keep(dir: &Path, name: &str, file: &Path, cape: bool) -> Result<(), String> {
     let bytes = read_file(file)?;

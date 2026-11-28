@@ -2642,10 +2642,6 @@ pub mod motion {
         DISABLE_LAUNCHER_ANIMATIONS.store(disabled, Ordering::Relaxed);
     }
 
-    pub fn launcher_animations_disabled() -> bool {
-        DISABLE_LAUNCHER_ANIMATIONS.load(Ordering::Relaxed)
-    }
-
     pub fn set_game_animations_disabled(disabled: bool) {
         DISABLE_GAME_ANIMATIONS.store(disabled, Ordering::Relaxed);
     }

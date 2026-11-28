@@ -232,32 +232,8 @@ thread_local! {
 
 pub(crate) const PUBLIC_BUILD: bool = true;
 
-pub(crate) fn keyboard_mouse_input() -> bool {
-    client::android_runtime::active_input() == catalog::InputHost::KeyboardMouse
-}
 pub(crate) fn configure_input_mode(mode: catalog::InputHost) {
     client::android_runtime::configure_input(mode);
-}
-pub(crate) fn touch_visible() -> bool {
-    client::android_runtime::active_input() == catalog::InputHost::Touch
-}
-pub(crate) fn touch_input(touch: bool) {
-    client::android_runtime::note_input(if touch {
-        catalog::InputHost::Touch
-    } else {
-        catalog::InputHost::KeyboardMouse
-    });
-}
-pub(crate) fn save_input_mode() {
-    let home = backend::data_dir();
-    let mut config = catalog::Config::load(&home);
-    let mode = client::android_runtime::input_mode();
-    if config.input_host != mode {
-        config.input_host = mode;
-        if let Err(e) = config.save(&home) {
-            log::warn!("Saving input mode: {e}");
-        }
-    }
 }
 
 /// Written by Play: the next start is the game's, in the instance `android-launcher.json` names.

@@ -1,6 +1,6 @@
 //! Frontend-independent, versioned local wardrobe. Selection is explicitly local:
 //! this module never calls an account service or changes a remote profile.
-use super::{Model, read_cape, read_file, read_skin};
+use super::{Model, read_cape, read_skin};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -139,16 +139,6 @@ impl Library {
         }
         self.save(root)?;
         Ok(id)
-    }
-    pub fn import_file(&mut self, root: &Path, path: &Path, kind: Kind) -> Result<String, String> {
-        self.import(
-            root,
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("Imported PNG"),
-            kind,
-            &read_file(path)?,
-        )
     }
     pub fn select(
         &mut self,

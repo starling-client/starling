@@ -3,7 +3,6 @@
 //! game's own account screen shows, their secrets sealed by the Android Keystore, the sign-in kept
 //! in the foreground while the player is in the browser. The game renews the session itself when it
 //! starts, so the launcher hands it no session file.
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub use starling_account::{Account, Provider, SecretStore, Secrets};
@@ -132,15 +131,6 @@ pub mod session {
             &crate::accounts::dir(),
         )
     }
-}
-
-/// Starling's game renews and keeps its session itself (`accounts::resume`): no file to hand it.
-pub fn write_session_file(
-    _dir: &Path,
-    _account: &Account,
-    _secrets: &Secrets,
-) -> Result<PathBuf, String> {
-    Ok(PathBuf::new())
 }
 
 /// A request to the account's services, as Sunrise's launcher makes them.

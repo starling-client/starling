@@ -171,13 +171,6 @@ fn pixel(w: u32, h: u32, rgba: &[u8], x: u32, y: u32) -> Option<(u32, u8)> {
     Some((rgb, rgba[i + 3]))
 }
 
-/// Decode a skin PNG into its head faces. Used by the wardrobe, whose selected
-/// image is already on disk and needs no profile lookup.
-pub fn from_png(bytes: &[u8]) -> Option<HeadSkin> {
-    let (w, h, rgba) = crate::ha_launcher::client::hud::decode_bytes(bytes).ok()?;
-    from_rgba(w, h, &rgba)
-}
-
 pub fn from_rgba(w: u32, h: u32, rgba: &[u8]) -> Option<HeadSkin> {
     // 64x32 is the legacy layout, which has no hat layer; modern skins are
     // 64x64. Anything smaller is not a Minecraft skin.

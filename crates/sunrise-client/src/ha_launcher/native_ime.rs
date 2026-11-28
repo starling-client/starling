@@ -119,5 +119,3 @@ pub fn pick_document() -> bool {
     })
     .is_some()
 }
-
-pub fn refresh_bounds() {}

@@ -304,13 +304,6 @@ impl Config {
         let year = if m <= 2 { y + 1 } else { y };
         self.last_name_changed = format!("{year:04}-{m:02}-{d:02} at {hh:02}:{mm:02} UTC");
     }
-    pub fn last_name_changed_label(&self) -> &str {
-        if self.last_name_changed.trim().is_empty() {
-            "Default profile (Never changed)"
-        } else {
-            &self.last_name_changed
-        }
-    }
     pub fn ui_scale_label(&self) -> &'static str {
         match self.ui_scale_percent {
             85 => "85% (Compact)",
@@ -1067,10 +1060,6 @@ impl Catalog {
                 });
             }
         }
-    }
-
-    pub fn search_worker_active(&self) -> bool {
-        self.search_worker.is_some()
     }
 
     pub fn refresh_fm(&mut self, home: &Path) {

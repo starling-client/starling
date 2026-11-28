@@ -120,6 +120,3 @@ pub fn loading_renderer(
 pub fn loading_frame(batch: &HudBatch) -> &HudBatch {
     batch
 }
-
-/// Horizon Android's game kept the mods it bundled on between runs; Starling's has none.
-pub fn android_reset_bundled_mods() {}

@@ -266,18 +266,6 @@ pub fn clipboard_get() -> Option<String> {
     })
 }
 
-pub fn set_orientation(orientation: crate::ha_launcher::catalog::Orientation) {
-    with_context(|env, activity| {
-        env.call_method(
-            activity,
-            "setRequestedOrientation",
-            "(I)V",
-            &[JValue::Int(orientation.android_value())],
-        )?;
-        Ok(())
-    });
-}
-
 pub fn cache_dir() -> Option<std::path::PathBuf> {
     with_context(|env, activity| {
         let file = env
@@ -342,36 +330,6 @@ pub fn open_url(url: &str) -> bool {
         Ok(())
     })
     .is_some()
-}
-/// Public Android power/thermal status; no device identifiers or sysfs access.
-pub fn performance_power() -> serde_json::Value {
-    with_context(|env, activity| {
-        let name = JObject::from(env.new_string("power")?);
-        let power = env
-            .call_method(
-                activity,
-                "getSystemService",
-                "(Ljava/lang/String;)Ljava/lang/Object;",
-                &[JValue::Object(&name)],
-            )?
-            .l()?;
-        let sdk = env
-            .get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?
-            .i()?;
-        let saver = env
-            .call_method(&power, "isPowerSaveMode", "()Z", &[])?
-            .z()?;
-        let thermal = if sdk >= 29 {
-            Some(
-                env.call_method(&power, "getCurrentThermalStatus", "()I", &[])?
-                    .i()?,
-            )
-        } else {
-            None
-        };
-        Ok(serde_json::json!({"android_sdk":sdk,"power_save":saver,"thermal_status":thermal}))
-    })
-    .unwrap_or(serde_json::Value::Null)
 }
 pub fn clipboard_set(text: &str) {
     let _ = clipboard_write(text, false);
@@ -459,9 +417,6 @@ pub fn show_secret(text: &str) {
 
 pub fn show(text: &str) {
     show_editor(text, false);
-}
-pub fn show_multiline(text: &str) {
-    show_editor(text, true);
 }
 fn show_editor(text: &str, multiline: bool) {
     MULTILINE.with(|mode| mode.set(multiline));
@@ -719,28 +674,4 @@ pub fn display_density() -> f32 {
     .clamp(1.0, 5.0);
     CACHED_BITS.store(queried.to_bits(), std::sync::atomic::Ordering::Relaxed);
     queried
-}
-
-/// Display rotation is queried only while gyro aiming is enabled.
-pub fn display_rotation() -> i32 {
-    with_context(|env, activity| {
-        let manager = env
-            .call_method(
-                activity,
-                "getWindowManager",
-                "()Landroid/view/WindowManager;",
-                &[],
-            )?
-            .l()?;
-        let display = env
-            .call_method(
-                manager,
-                "getDefaultDisplay",
-                "()Landroid/view/Display;",
-                &[],
-            )?
-            .l()?;
-        env.call_method(display, "getRotation", "()I", &[])?.i()
-    })
-    .unwrap_or(0)
 }
