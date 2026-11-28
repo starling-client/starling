@@ -84,13 +84,13 @@ pub fn index() -> Result<Arc<Index>, String> {
     // (`SUNRISE_MOD_INDEX`) is still read as the old index.json.
     if location() == INDEX_URL {
         let fetched = fetch_bytes(INDEX_URL);
-        let mut index = index::v2_index(
+        // Starling: Horizon's registry (horizon-rust/horizon-mods) is gone, its files with it
+        // (28/11): every mod it listed failed to download. Sunrise's stands alone.
+        let index = Arc::new(index::v2_index(
             fetched,
             &crate::ha_launcher::backend::game_home().join("mod-browser"),
             GAME,
-        )?;
-        merge_horizon(&mut index);
-        let index = Arc::new(index);
+        )?);
         *LOADED.lock().unwrap() = Some((Instant::now(), index.clone()));
         return Ok(index);
     }
@@ -156,44 +156,6 @@ fn fetch_bytes(at: &str) -> Result<Vec<u8>, String> {
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     Ok(bytes)
-}
-
-/// Starling: Horizon's registry beside Sunrise's, in one list. Its `.hmod` packages are made
-/// Sunrise's as they are installed (sunrise_mod_package::horizon). What it lists is kept in the
-/// game folder too, for when it can't be reached; without either, Sunrise's stand alone.
-fn merge_horizon(index: &mut Index) {
-    let kept = crate::ha_launcher::backend::game_home().join(HORIZON_CACHE);
-    let fetched = horizon_index_text();
-    if let Ok(text) = &fetched {
-        if let Some(dir) = kept.parent() {
-            let _ = fs::create_dir_all(dir);
-        }
-        let _ = fs::write(&kept, text);
-    }
-    let horizon = fetched.or_else(|e| fs::read_to_string(&kept).map_err(|_| e));
-    if let Ok(other) = horizon.and_then(|text| Index::parse(&text)) {
-        index.merge(other);
-    }
-}
-
-/// Horizon's registry's index (GitHub Pages of horizon-rust/horizon-mods).
-const HORIZON_INDEX_URL: &str = "https://horizon-rust.github.io/horizon-mods/index.json";
-const HORIZON_CACHE: &str = "mod-browser/horizon-index.json";
-
-fn horizon_index_text() -> Result<String, String> {
-    use std::io::Read;
-    let at = HORIZON_INDEX_URL;
-    let response = download::agent(at)
-        .get(at)
-        .call()
-        .map_err(|e| e.to_string())?;
-    let mut text = String::new();
-    response
-        .into_reader()
-        .take(MAX_INDEX)
-        .read_to_string(&mut text)
-        .map_err(|e| e.to_string())?;
-    Ok(text)
 }
 
 /// A project's ratings: 1 to 5 stars, their mean and how many.
