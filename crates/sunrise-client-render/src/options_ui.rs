@@ -2819,7 +2819,11 @@ impl OptionsUi {
     pub fn typing(&self) -> bool {
         self.resource_error.is_none()
             && match self.page() {
-                Page::Language => true,
+                // Starling: on a phone the keyboard comes up for a typing page, and covered the
+                // list as the page opened: there it waits for a tap on the search box.
+                Page::Language => {
+                    !cfg!(target_os = "android") || self.focus == Some(FocusId::Search)
+                }
                 Page::Packs => self
                     .pack_screen
                     .as_ref()
