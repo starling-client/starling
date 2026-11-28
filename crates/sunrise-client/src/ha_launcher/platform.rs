@@ -296,7 +296,8 @@ pub fn open_repository() -> bool {
     open_url("https://github.com/starling-client/starling")
 }
 /// Browse one of the launcher's folders in the system's file manager: Starling's provider
-/// (GameFolderProvider) shows the game folder, the reports are the app's own diagnostics.
+/// (GameFolderProvider) shows the game folder (`document_store::ROOT`, or a profile's folder),
+/// the reports are the app's own diagnostics.
 pub fn open_documents(id: &str) -> bool {
     let path = if id == "reports" {
         crate::ha_launcher::client::logging::private_home().join("performance")
