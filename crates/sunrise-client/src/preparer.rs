@@ -319,13 +319,15 @@ pub fn skin() -> Option<PathBuf> {
 /// Starling Visuals, the shader pack the app carries (packaging/shaderpacks/starling-visuals, the
 /// APK's `assets/StarlingVisuals.zip`), put in `shaderpacks/` of the game folder: again only when
 /// the app carries another one than it put there last, so a pack the player deleted stays deleted
-/// until an update brings a new one.
+/// until an update brings a new one. Each folder keeps its own mark: a profile (`profiles/
+/// profile-N`) is a game folder of its own, and one mark for the app put the pack only in the
+/// first folder that started.
 pub fn put_shader_pack(game_folder: &Path) {
     let Some(bytes) = crate::platform::asset("StarlingVisuals.zip") else {
         return;
     };
     let stamp = format!("{}-{:08x}", bytes.len(), crc32(&bytes));
-    let marker = crate::logging::private_home().join(".starling-visuals");
+    let marker = game_folder.join(".starling-visuals");
     if std::fs::read_to_string(&marker).ok().as_deref() == Some(&stamp) {
         return;
     }
