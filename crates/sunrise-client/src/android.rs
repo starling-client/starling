@@ -1250,16 +1250,16 @@ pub fn args() -> Vec<String> {
     ARGS.get().cloned().unwrap_or_default()
 }
 
-/// The game's command line and environment: `--resources` in the game folder, then
-/// `sunrise-args.txt` there (written over adb for tests), which may override it: one argument per
-/// line, or `NAME=value` for an environment variable (`SUNRISE_GPU_CULL=0`, `WGPU_BACKEND=...`).
-fn command_line(home: &Path) -> (Vec<String>, Vec<(String, String)>) {
+/// The game's command line and environment: `--resources` in the app's private files `private`,
+/// then `sunrise-args.txt` there (written over adb for tests), which may override it: one argument
+/// per line, or `NAME=value` for an environment variable (`SUNRISE_GPU_CULL=0`, `WGPU_BACKEND=...`).
+fn command_line(private: &Path) -> (Vec<String>, Vec<(String, String)>) {
     let mut args = vec![
         "--resources".to_owned(),
-        home.join("resources").display().to_string(),
+        private.join("resources").display().to_string(),
     ];
     let mut env = Vec::new();
-    let text = std::fs::read_to_string(home.join("sunrise-args.txt")).unwrap_or_default();
+    let text = std::fs::read_to_string(private.join("sunrise-args.txt")).unwrap_or_default();
     for line in text.lines().map(str::trim) {
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -1586,6 +1586,9 @@ pub fn main(
     {
         hide_from_gallery(&home);
     }
+    // Starling: what an earlier Starling (on Horizon) kept under Horizon's names, before anything
+    // reads the settings: the test arguments next, then the launcher's or the game's own.
+    let adopted = [adopt_horizon_names(&home), adopt_horizon_names(&private)].concat();
     let (args, env) = command_line(&private);
     // SAFETY: no other thread of ours runs yet; the game reads these from its threads afterwards.
     unsafe {
@@ -1650,7 +1653,7 @@ pub fn main(
             folder.display(),
             private.display()
         );
-        for note in notes {
+        for note in notes.iter().chain(&adopted) {
             log::info!("{note}");
         }
         winit::platform::android::set_input_hook(input::hook);
@@ -1667,9 +1670,6 @@ pub fn main(
     // A chosen custom GPU driver replaces the system's libvulkan before anything loads Vulkan
     // (#470). Its report waits for the log: none runs yet.
     let _ = GPU_DRIVER_NOTES.set(load_custom_driver());
-    // Starling: what an earlier Starling (on Horizon) kept under Horizon's names, before anything
-    // reads the settings.
-    let adopted = [adopt_horizon_names(&home), adopt_horizon_names(&private)].concat();
     crate::entry::set_after_log(move || {
         for line in &adopted {
             log::info!("{line}");
